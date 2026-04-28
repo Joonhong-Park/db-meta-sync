@@ -12,11 +12,11 @@ from type_map import resolve_type_id
 
 
 def _dist_idx(data_type):
-    """파티션 컬럼 타입 → distribution_idx (timestamp: 1, string계열: 2)"""
+    """파티션 컬럼 타입 → distribution_idx (timestamp: 1, string: 2)"""
     base = data_type.lower().split("(")[0].strip()
     if base == "timestamp":
         return 1
-    if base in ("string", "varchar", "char"):
+    if base == "string":
         return 2
     return None
 
