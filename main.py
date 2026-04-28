@@ -4,16 +4,15 @@ DB 동기화 도구 — 대화형 CLI
        python3 main.py --sync <table_id>
 """
 import sys
-from typing import Any
 
 import db_client
-from db_client import DBTarget
+from db_client import DB_C
 from sync_manager import build_comparison, print_comparison, apply_sync
 
 
 # ── 터미널 표 출력 (순수 Python) ───────────────────────────────────────
 
-def print_table(rows: list[dict[str, Any]]) -> None:
+def print_table(rows):
     if not rows:
         print("  (결과 없음)")
         return
@@ -35,7 +34,7 @@ def print_table(rows: list[dict[str, Any]]) -> None:
 
 # ── 공통 유틸 ─────────────────────────────────────────────────────────
 
-def _input_table_id() -> int | None:
+def _input_table_id():
     raw = input("table_id 입력: ").strip()
     try:
         return int(raw)
@@ -46,7 +45,7 @@ def _input_table_id() -> int | None:
 
 # ── 1. 테이블 정보 조회 ────────────────────────────────────────────────
 
-def handle_select() -> None:
+def handle_select():
     table_id = _input_table_id()
     if table_id is None:
         return
@@ -54,7 +53,7 @@ def handle_select() -> None:
     meta = db_client.fetch_one(
         'SELECT * FROM "c_table_meta" WHERE "table_id" = %s',
         params=(table_id,),
-        target=DBTarget.C,
+        target=DB_C,
     )
     if not meta:
         print(f"  table_id {table_id} 가 존재하지 않습니다.")
@@ -66,7 +65,7 @@ def handle_select() -> None:
     columns = db_client.fetch_all(
         'SELECT * FROM "c_table_column" WHERE "table_id" = %s ORDER BY "sort_idx"',
         params=(table_id,),
-        target=DBTarget.C,
+        target=DB_C,
     )
     print("\n[컬럼 정보]")
     print_table(columns)
@@ -74,7 +73,7 @@ def handle_select() -> None:
 
 # ── 2. 테이블 동기화 ───────────────────────────────────────────────────
 
-def handle_sync(table_id: int | None = None) -> None:
+def handle_sync(table_id=None):
     if table_id is None:
         table_id = _input_table_id()
     if table_id is None:
@@ -102,7 +101,7 @@ def handle_sync(table_id: int | None = None) -> None:
 
 # ── 3. 테이블 정보 삭제 ────────────────────────────────────────────────
 
-def handle_delete() -> None:
+def handle_delete():
     table_id = _input_table_id()
     if table_id is None:
         return
@@ -110,7 +109,7 @@ def handle_delete() -> None:
     meta = db_client.fetch_one(
         'SELECT "table_id", "db_name", "table_name" FROM "c_table_meta" WHERE "table_id" = %s',
         params=(table_id,),
-        target=DBTarget.C,
+        target=DB_C,
     )
     if not meta:
         print(f"  table_id {table_id} 가 존재하지 않습니다.")
@@ -130,19 +129,19 @@ def handle_delete() -> None:
     db_client.delete(
         'DELETE FROM "c_table_column" WHERE "table_id" = %s',
         params=(table_id,),
-        target=DBTarget.C,
+        target=DB_C,
     )
     db_client.delete(
         'DELETE FROM "c_table_meta" WHERE "table_id" = %s',
         params=(table_id,),
-        target=DBTarget.C,
+        target=DB_C,
     )
     print(f"  삭제 완료: {db_table} (table_id: {table_id})")
 
 
 # ── 메뉴 ──────────────────────────────────────────────────────────────
 
-def _run(func: callable) -> None:
+def _run(func):
     """메뉴 모드 예외 처리 — 오류 출력 후 메뉴로 복귀"""
     try:
         func()
@@ -152,7 +151,7 @@ def _run(func: callable) -> None:
         print(f"\n  [오류] {type(e).__name__}: {e}")
 
 
-def main() -> None:
+def main():
     # --sync <table_id> 인자가 있으면 메뉴 없이 바로 동기화 실행
     args = sys.argv[1:]
     if len(args) == 2 and args[0] == "--sync":
