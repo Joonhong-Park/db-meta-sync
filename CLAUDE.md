@@ -30,7 +30,7 @@ chmod +x /home/my_username/tunnel.sh
 
 ```
 config.py        접속 정보 (C_DB_*, D_DB_*) — 환경변수 오버라이드 가능
-db_client.py     DBTarget enum(C/D) + 커넥션 컨텍스트 매니저 + CRUD 함수
+db_client.py     DB_C / DB_D 문자열 상수 + 커넥션 컨텍스트 매니저 + CRUD 함수
 mappings.py      TableMapping 데이터클래스 + C_TIMESTAMP_COLS + TABLE_MAPPINGS
 sync_manager.py  비교 데이터 생성 / 비교화면 출력 / 동기화 실행
 main.py          대화형 메뉴 (1.조회 / 2.동기화 / 3.삭제)
