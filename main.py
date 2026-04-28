@@ -51,8 +51,7 @@ def handle_select():
         return
 
     meta = db_client.fetch_one(
-        'SELECT * FROM "c_table_meta" WHERE "table_id" = %s',
-        params=(table_id,),
+        f'SELECT * FROM "c_table_meta" WHERE "table_id" = {table_id}',
         target=DB_C,
     )
     if not meta:
@@ -63,8 +62,7 @@ def handle_select():
     print_table([meta])
 
     columns = db_client.fetch_all(
-        'SELECT * FROM "c_table_column" WHERE "table_id" = %s ORDER BY "sort_idx"',
-        params=(table_id,),
+        f'SELECT * FROM "c_table_column" WHERE "table_id" = {table_id} ORDER BY "sort_idx"',
         target=DB_C,
     )
     print("\n[컬럼 정보]")
@@ -107,8 +105,7 @@ def handle_delete():
         return
 
     meta = db_client.fetch_one(
-        'SELECT "table_id", "db_name", "table_name" FROM "c_table_meta" WHERE "table_id" = %s',
-        params=(table_id,),
+        f'SELECT "table_id", "db_name", "table_name" FROM "c_table_meta" WHERE "table_id" = {table_id}',
         target=DB_C,
     )
     if not meta:
@@ -127,13 +124,11 @@ def handle_delete():
 
     # FK 순서: column 먼저 삭제 후 meta 삭제
     db_client.delete(
-        'DELETE FROM "c_table_column" WHERE "table_id" = %s',
-        params=(table_id,),
+        f'DELETE FROM "c_table_column" WHERE "table_id" = {table_id}',
         target=DB_C,
     )
     db_client.delete(
-        'DELETE FROM "c_table_meta" WHERE "table_id" = %s',
-        params=(table_id,),
+        f'DELETE FROM "c_table_meta" WHERE "table_id" = {table_id}',
         target=DB_C,
     )
     print(f"  삭제 완료: {db_table} (table_id: {table_id})")

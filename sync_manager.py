@@ -26,6 +26,17 @@ def _q(identifier):
     return f'"{identifier}"'
 
 
+def _val(v):
+    """Python 값 → SQL 리터럴 문자열 변환"""
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, (int, float)):
+        return str(v)
+    return "'" + str(v).replace("'", "''") + "'"
+
+
 def _map_row(row, col_map):
     """D 행을 C 컬럼명 기준으로 변환"""
     return {col_map[k]: v for k, v in row.items() if k in col_map}
@@ -54,10 +65,7 @@ def _fetch_d_meta(table_id):
     cols = ", ".join(_META.column_map.keys())
     with get_connection(DB_D) as conn:
         with get_cursor(conn) as cur:
-            cur.execute(
-                f"SELECT {cols} FROM {_META.source_table} WHERE table_id = %s",
-                (table_id,),
-            )
+            cur.execute(f"SELECT {cols} FROM {_META.source_table} WHERE table_id = {table_id}")
             row = cur.fetchone()
             return dict(row) if row else None
 
@@ -67,8 +75,7 @@ def _fetch_c_meta(table_id):
     with get_connection(DB_C) as conn:
         with get_cursor(conn) as cur:
             cur.execute(
-                f'SELECT {cols} FROM {_q(_META.target_table)} WHERE {_q("table_id")} = %s',
-                (table_id,),
+                f'SELECT {cols} FROM {_q(_META.target_table)} WHERE {_q("table_id")} = {table_id}'
             )
             row = cur.fetchone()
             return dict(row) if row else None
@@ -80,8 +87,7 @@ def _fetch_d_columns(table_id):
         with get_cursor(conn) as cur:
             cur.execute(
                 f"SELECT {cols} FROM {_COL.source_table} "
-                f"WHERE table_id = %s ORDER BY sort_idx",
-                (table_id,),
+                f"WHERE table_id = {table_id} ORDER BY sort_idx"
             )
             return [dict(r) for r in cur.fetchall()]
 
@@ -92,8 +98,7 @@ def _fetch_c_columns(table_id):
         with get_cursor(conn) as cur:
             cur.execute(
                 f'SELECT {cols} FROM {_q(_COL.target_table)} '
-                f'WHERE {_q("table_id")} = %s ORDER BY {_q("sort_idx")}',
-                (table_id,),
+                f'WHERE {_q("table_id")} = {table_id} ORDER BY {_q("sort_idx")}'
             )
             return [dict(r) for r in cur.fetchall()]
 
@@ -264,21 +269,18 @@ def _sync_meta(cur, table_id, cmp, now):
     if cmp["c_meta"] is None:
         c_cols = list(_META.column_map.values()) + list(C_TIMESTAMP_COLS)
         cols_q = ", ".join(_q(c) for c in c_cols)
-        placeholders = ", ".join(["%s"] * len(c_cols))
         vals = [mapped[c] for c in _META.column_map.values()] + [now, now]
-        cur.execute(
-            f'INSERT INTO {_q(_META.target_table)} ({cols_q}) VALUES ({placeholders})',
-            vals,
-        )
+        values_str = ", ".join(_val(v) for v in vals)
+        cur.execute(f'INSERT INTO {_q(_META.target_table)} ({cols_q}) VALUES ({values_str})')
         return "INSERT"
 
     if any(d["status"] == "변경" for d in cmp["meta_diffs"]):
-        set_clause = ", ".join(_q(c) + " = %s" for c in non_pk + ["update_date_ts"])
-        vals = [mapped[c] for c in non_pk] + [now, table_id]
+        set_parts = [f'{_q(c)} = {_val(mapped[c])}' for c in non_pk]
+        set_parts.append(f'{_q("update_date_ts")} = {_val(now)}')
+        set_clause = ", ".join(set_parts)
         cur.execute(
             f'UPDATE {_q(_META.target_table)} SET {set_clause} '
-            f'WHERE {_q("table_id")} = %s',
-            vals,
+            f'WHERE {_q("table_id")} = {table_id}'
         )
         return "UPDATE"
 
@@ -296,36 +298,29 @@ def _sync_columns(cur, table_id, cmp, now):
         if status == "추가 예정" and d_row:
             c_cols = list(_COL.column_map.values()) + list(C_TIMESTAMP_COLS)
             cols_q = ", ".join(_q(c) for c in c_cols)
-            placeholders = ", ".join(["%s"] * len(c_cols))
             vals = [d_row[c] for c in _COL.column_map.values()] + [now, now]
-            cur.execute(
-                f'INSERT INTO {_q(_COL.target_table)} ({cols_q}) VALUES ({placeholders})',
-                vals,
-            )
+            values_str = ", ".join(_val(v) for v in vals)
+            cur.execute(f'INSERT INTO {_q(_COL.target_table)} ({cols_q}) VALUES ({values_str})')
             inserted += 1
 
         elif status == "변경" and d_row and c_row:
-            set_clause = ", ".join(_q(c) + " = %s" for c in _COL_UPDATEABLE + ["update_date_ts"])
-            vals = (
-                [d_row[c] for c in _COL_UPDATEABLE]
-                + [now, table_id, c_row["column_name"], c_row["sort_idx"]]
-            )
+            set_parts = [f'{_q(c)} = {_val(d_row[c])}' for c in _COL_UPDATEABLE]
+            set_parts.append(f'{_q("update_date_ts")} = {_val(now)}')
+            set_clause = ", ".join(set_parts)
             cur.execute(
                 f'UPDATE {_q(_COL.target_table)} SET {set_clause} '
-                f'WHERE {_q("table_id")} = %s '
-                f'AND {_q("column_name")} = %s '
-                f'AND {_q("sort_idx")} = %s',
-                vals,
+                f'WHERE {_q("table_id")} = {table_id} '
+                f'AND {_q("column_name")} = {_val(c_row["column_name"])} '
+                f'AND {_q("sort_idx")} = {c_row["sort_idx"]}'
             )
             updated += 1
 
         elif status == "삭제 예정" and c_row:
             cur.execute(
                 f'DELETE FROM {_q(_COL.target_table)} '
-                f'WHERE {_q("table_id")} = %s '
-                f'AND {_q("column_name")} = %s '
-                f'AND {_q("sort_idx")} = %s',
-                (table_id, c_row["column_name"], c_row["sort_idx"]),
+                f'WHERE {_q("table_id")} = {table_id} '
+                f'AND {_q("column_name")} = {_val(c_row["column_name"])} '
+                f'AND {_q("sort_idx")} = {c_row["sort_idx"]}'
             )
             deleted += 1
 

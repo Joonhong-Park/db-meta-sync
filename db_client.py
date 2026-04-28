@@ -69,56 +69,47 @@ def get_cursor(conn):
 
 # ── SELECT ─────────────────────────────────────────────────────────────
 
-def fetch_all(query, params=None, target=DB_C):
+def fetch_all(query, target=DB_C):
     with get_connection(target) as conn:
         with get_cursor(conn) as cur:
-            cur.execute(query, params)
+            cur.execute(query)
             return [dict(row) for row in cur.fetchall()]
 
 
-def fetch_one(query, params=None, target=DB_C):
+def fetch_one(query, target=DB_C):
     with get_connection(target) as conn:
         with get_cursor(conn) as cur:
-            cur.execute(query, params)
+            cur.execute(query)
             row = cur.fetchone()
             return dict(row) if row is not None else None
 
 
 # ── INSERT ─────────────────────────────────────────────────────────────
 
-def insert_one(query, params, target=DB_C):
+def insert_one(query, target=DB_C):
     """RETURNING 절이 있으면 삽입된 행을 반환, 없으면 None"""
     with get_connection(target) as conn:
         with get_cursor(conn) as cur:
-            cur.execute(query, params)
+            cur.execute(query)
             if cur.description:
                 row = cur.fetchone()
                 return dict(row) if row is not None else None
             return None
 
 
-def insert_bulk(query, params_list, target=DB_C):
-    if not params_list:
-        return 0
-    with get_connection(target) as conn:
-        with get_cursor(conn) as cur:
-            cur.executemany(query, params_list)
-            return len(params_list)
-
-
 # ── UPDATE ─────────────────────────────────────────────────────────────
 
-def update(query, params, target=DB_C):
+def update(query, target=DB_C):
     with get_connection(target) as conn:
         with get_cursor(conn) as cur:
-            cur.execute(query, params)
+            cur.execute(query)
             return cur.rowcount
 
 
 # ── DELETE ─────────────────────────────────────────────────────────────
 
-def delete(query, params, target=DB_C):
+def delete(query, target=DB_C):
     with get_connection(target) as conn:
         with get_cursor(conn) as cur:
-            cur.execute(query, params)
+            cur.execute(query)
             return cur.rowcount
