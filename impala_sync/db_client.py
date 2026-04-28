@@ -7,16 +7,14 @@ from contextlib import contextmanager
 
 import config
 
-
-def _build_dsn():
-    return (
-        f"host={config.D_DB_HOST} "
-        f"port={config.D_DB_PORT} "
-        f"dbname={config.D_DB_NAME} "
-        f"user={config.D_DB_USER} "
-        f"password={config.D_DB_PASSWORD} "
-        f"connect_timeout={config.DB_CONNECT_TIMEOUT}"
-    )
+_DB_CONFIG = {
+    "host":            config.D_DB_HOST,
+    "port":            config.D_DB_PORT,
+    "dbname":          config.D_DB_NAME,
+    "user":            config.D_DB_USER,
+    "password":        config.D_DB_PASSWORD,
+    "connect_timeout": config.DB_CONNECT_TIMEOUT,
+}
 
 
 @contextmanager
@@ -24,7 +22,7 @@ def get_connection():
     """DB 커넥션 컨텍스트 매니저 — 정상 종료 시 commit, 예외 시 rollback"""
     conn = None
     try:
-        conn = psycopg2.connect(_build_dsn())
+        conn = psycopg2.connect(**_DB_CONFIG)
         yield conn
         conn.commit()
     except psycopg2.OperationalError as e:
@@ -49,49 +47,15 @@ def get_cursor(conn):
         cur.close()
 
 
-# ── SELECT ─────────────────────────────────────────────────────────────
-
-def fetch_all(query):
+def execute_query(query, fetch_result=False, commit=False):
+    """
+    fetch_result=True : SELECT — list[dict] 반환 (결과 없으면 빈 리스트)
+    commit=True       : INSERT / UPDATE / DELETE — 영향받은 행 수(int) 반환
+    """
     with get_connection() as conn:
         with get_cursor(conn) as cur:
             cur.execute(query)
-            return [dict(row) for row in cur.fetchall()]
-
-
-def fetch_one(query):
-    with get_connection() as conn:
-        with get_cursor(conn) as cur:
-            cur.execute(query)
-            row = cur.fetchone()
-            return dict(row) if row is not None else None
-
-
-# ── INSERT ─────────────────────────────────────────────────────────────
-
-def insert_one(query):
-    """RETURNING 절이 있으면 삽입된 행을 반환, 없으면 None"""
-    with get_connection() as conn:
-        with get_cursor(conn) as cur:
-            cur.execute(query)
-            if cur.description:
-                row = cur.fetchone()
-                return dict(row) if row is not None else None
-            return None
-
-
-# ── UPDATE ─────────────────────────────────────────────────────────────
-
-def update(query):
-    with get_connection() as conn:
-        with get_cursor(conn) as cur:
-            cur.execute(query)
-            return cur.rowcount
-
-
-# ── DELETE ─────────────────────────────────────────────────────────────
-
-def delete(query):
-    with get_connection() as conn:
-        with get_cursor(conn) as cur:
-            cur.execute(query)
-            return cur.rowcount
+            if fetch_result:
+                return [dict(row) for row in cur.fetchall()]
+            if commit:
+                return cur.rowcount

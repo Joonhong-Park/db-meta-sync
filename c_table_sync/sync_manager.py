@@ -4,7 +4,7 @@ table_id 단건 기준으로 meta + column 완전 동기화
 """
 from datetime import datetime
 
-from db_client import DB_C, DB_D, get_connection, get_cursor
+from db_client import DB_C, DB_D, get_connection, get_cursor, execute_query
 from mappings import TABLE_MAPPINGS, C_TIMESTAMP_COLS, TYPE_ID_MAP
 
 _META = TABLE_MAPPINGS["table_meta"]
@@ -62,45 +62,39 @@ def _resolve_type_id(row, d_type_id_raw):
 # ── 데이터 조회 ─────────────────────────────────────────────────────────
 
 def _fetch_d_meta(table_id):
-    cols = ", ".join(_META.column_map.keys())
-    with get_connection(DB_D) as conn:
-        with get_cursor(conn) as cur:
-            cur.execute(f"SELECT {cols} FROM {_META.source_table} WHERE table_id = {table_id}")
-            row = cur.fetchone()
-            return dict(row) if row else None
+    cols   = ", ".join(_META.column_map.keys())
+    result = execute_query(
+        f"SELECT {cols} FROM {_META.source_table} WHERE table_id = {table_id}",
+        target=DB_D, fetch_result=True,
+    )
+    return result[0] if result else None
 
 
 def _fetch_c_meta(table_id):
-    cols = ", ".join(_q(c) for c in _META.column_map.values())
-    with get_connection(DB_C) as conn:
-        with get_cursor(conn) as cur:
-            cur.execute(
-                f'SELECT {cols} FROM {_q(_META.target_table)} WHERE {_q("table_id")} = {table_id}'
-            )
-            row = cur.fetchone()
-            return dict(row) if row else None
+    cols   = ", ".join(_q(c) for c in _META.column_map.values())
+    result = execute_query(
+        f'SELECT {cols} FROM {_q(_META.target_table)} WHERE {_q("table_id")} = {table_id}',
+        target=DB_C, fetch_result=True,
+    )
+    return result[0] if result else None
 
 
 def _fetch_d_columns(table_id):
     cols = ", ".join(_COL.column_map.keys())
-    with get_connection(DB_D) as conn:
-        with get_cursor(conn) as cur:
-            cur.execute(
-                f"SELECT {cols} FROM {_COL.source_table} "
-                f"WHERE table_id = {table_id} ORDER BY sort_idx"
-            )
-            return [dict(r) for r in cur.fetchall()]
+    return execute_query(
+        f"SELECT {cols} FROM {_COL.source_table} "
+        f"WHERE table_id = {table_id} ORDER BY sort_idx",
+        target=DB_D, fetch_result=True,
+    )
 
 
 def _fetch_c_columns(table_id):
     cols = ", ".join(_q(c) for c in _COL.column_map.values())
-    with get_connection(DB_C) as conn:
-        with get_cursor(conn) as cur:
-            cur.execute(
-                f'SELECT {cols} FROM {_q(_COL.target_table)} '
-                f'WHERE {_q("table_id")} = {table_id} ORDER BY {_q("sort_idx")}'
-            )
-            return [dict(r) for r in cur.fetchall()]
+    return execute_query(
+        f'SELECT {cols} FROM {_q(_COL.target_table)} '
+        f'WHERE {_q("table_id")} = {table_id} ORDER BY {_q("sort_idx")}',
+        target=DB_C, fetch_result=True,
+    )
 
 
 # ── 비교 데이터 생성 ────────────────────────────────────────────────────
@@ -141,7 +135,7 @@ def build_comparison(table_id):
 
     all_keys = sorted(
         set(d_col_map) | set(c_col_map),
-        key=lambda k: (k[1], k[0]),  # sort_idx 우선, 동일하면 column_name
+        key=lambda k: (k[1], k[0]),
     )
 
     column_diffs = []
@@ -236,7 +230,6 @@ def print_comparison(cmp):
             ],
         )
 
-    # distribution 섹션 — 값이 있는 row만 출력, 없으면 섹션 생략
     dist_rows = [
         d for d in cmp["column_diffs"]
         if any([d["d_dist_yn"], d["d_dist_idx"], d["c_dist_yn"], d["c_dist_idx"]])

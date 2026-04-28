@@ -28,39 +28,44 @@ def get_connection():
 
 def describe_columns(db_name, table_name):
     """
-    DESCRIBE FORMATTED {db}.{table} 실행 후 일반 컬럼과 파티션 컬럼을 분리하여 반환
+    DESCRIBE FORMATTED {db}.{table} 실행 후 컬럼 목록을 순서 그대로 반환
 
-    반환:
-        regular    : [{"column_name": str, "data_type": str}, ...]  (sort_idx 순서)
-        partitions : [{"column_name": str, "data_type": str}, ...]  (파티션 컬럼, 1~2개)
+    반환: [{"column_name": str, "data_type": str, "is_partition": bool}, ...]
+
+    - 일반 테이블 : 파티션 컬럼은 # Partition Information 섹션에서 파싱
+    - Iceberg 테이블: 파티션 컬럼은 # Partition Transform Information 섹션에서
+                      이름만 수집 후 일반 컬럼 섹션의 data_type을 사용
+                      (컬럼 순서는 일반 컬럼 섹션 기준으로 유지)
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(f"DESCRIBE FORMATTED {db_name}.{table_name}")
             rows = cur.fetchall()
 
-    regular    = []
-    partitions = []
-
-    # ── 일반 컬럼 파싱 (첫 번째 빈 행 또는 '#' 전까지) ──────────────────
+    # ── 일반 컬럼 파싱 ──────────────────────────────────────────────────
+    columns = []
     split_idx = 0
     for i, row in enumerate(rows):
         col_name = (row[0] or "").strip()
         if not col_name or col_name.startswith("#"):
             split_idx = i
             break
-        regular.append({"column_name": col_name, "data_type": (row[1] or "").strip()})
+        columns.append({"column_name": col_name, "data_type": (row[1] or "").strip(), "is_partition": False})
 
-    # ── 파티션 컬럼 파싱 (# Partition Information 섹션) ──────────────────
-    in_partition   = False
+    # ── 파티션 섹션 파싱 ────────────────────────────────────────────────
+    in_partition     = False
     skip_next_header = False
+    is_iceberg       = False
+    iceberg_part_names = set()
+
     for row in rows[split_idx:]:
         col_name  = (row[0] or "").strip()
         data_type = (row[1] or "").strip()
 
-        if col_name == "# Partition Information":
+        if col_name in ("# Partition Information", "# Partition Transform Information"):
             in_partition     = True
-            skip_next_header = True  # 다음 '# col_name  data_type  comment' 헤더 행 스킵
+            skip_next_header = True
+            is_iceberg       = (col_name == "# Partition Transform Information")
             continue
 
         if not in_partition:
@@ -68,14 +73,24 @@ def describe_columns(db_name, table_name):
 
         if col_name.startswith("#"):
             if skip_next_header:
-                skip_next_header = False  # 헤더 행 1개 스킵
+                skip_next_header = False
             else:
-                break  # # Detailed Table Information 등 다음 섹션 → 종료
+                break  # 다음 섹션 시작 → 종료
             continue
 
         if not col_name:
-            break  # 빈 행 → 파티션 섹션 종료
+            break  # 빈 행 → 섹션 종료
 
-        partitions.append({"column_name": col_name, "data_type": data_type})
+        if is_iceberg:
+            iceberg_part_names.add(col_name)
+        else:
+            # 일반 테이블: 파티션 컬럼이 별도 섹션에 data_type과 함께 존재
+            columns.append({"column_name": col_name, "data_type": data_type, "is_partition": True})
 
-    return regular, partitions
+    # Iceberg: 일반 컬럼 섹션에서 파티션 컬럼에 플래그 설정
+    if is_iceberg:
+        for col in columns:
+            if col["column_name"] in iceberg_part_names:
+                col["is_partition"] = True
+
+    return columns

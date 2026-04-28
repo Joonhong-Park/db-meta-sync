@@ -6,7 +6,6 @@ DB 동기화 도구 — 대화형 CLI
 import sys
 
 import db_client
-from db_client import DB_C
 from sync_manager import build_comparison, print_comparison, apply_sync
 
 
@@ -50,20 +49,20 @@ def handle_select():
     if table_id is None:
         return
 
-    meta = db_client.fetch_one(
+    rows = db_client.execute_query(
         f'SELECT * FROM "c_table_meta" WHERE "table_id" = {table_id}',
-        target=DB_C,
+        fetch_result=True,
     )
-    if not meta:
+    if not rows:
         print(f"  table_id {table_id} 가 존재하지 않습니다.")
         return
 
     print("\n[메타 정보]")
-    print_table([meta])
+    print_table(rows)
 
-    columns = db_client.fetch_all(
+    columns = db_client.execute_query(
         f'SELECT * FROM "c_table_column" WHERE "table_id" = {table_id} ORDER BY "sort_idx"',
-        target=DB_C,
+        fetch_result=True,
     )
     print("\n[컬럼 정보]")
     print_table(columns)
@@ -104,16 +103,17 @@ def handle_delete():
     if table_id is None:
         return
 
-    meta = db_client.fetch_one(
+    rows = db_client.execute_query(
         f'SELECT "table_id", "db_name", "table_name" FROM "c_table_meta" WHERE "table_id" = {table_id}',
-        target=DB_C,
+        fetch_result=True,
     )
-    if not meta:
+    if not rows:
         print(f"  table_id {table_id} 가 존재하지 않습니다.")
         return
 
+    meta     = rows[0]
     db_table = f"{meta['db_name']}.{meta['table_name']}"
-    answer = input(
+    answer   = input(
         f"\n  table_id: {table_id} / {db_table}\n"
         f"  정말 삭제하시겠습니까? (yes/no): "
     ).strip().lower()
@@ -123,14 +123,8 @@ def handle_delete():
         return
 
     # FK 순서: column 먼저 삭제 후 meta 삭제
-    db_client.delete(
-        f'DELETE FROM "c_table_column" WHERE "table_id" = {table_id}',
-        target=DB_C,
-    )
-    db_client.delete(
-        f'DELETE FROM "c_table_meta" WHERE "table_id" = {table_id}',
-        target=DB_C,
-    )
+    db_client.execute_query(f'DELETE FROM "c_table_column" WHERE "table_id" = {table_id}', commit=True)
+    db_client.execute_query(f'DELETE FROM "c_table_meta" WHERE "table_id" = {table_id}', commit=True)
     print(f"  삭제 완료: {db_table} (table_id: {table_id})")
 
 
