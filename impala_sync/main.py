@@ -4,11 +4,7 @@ Impala → D DB 컬럼 동기화
 """
 import sys
 import os
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-sys.path.insert(0, _ROOT)  # db_client, config (부모 디렉토리)
-sys.path.insert(0, _HERE)  # impala_config, impala_client, type_map
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from db_client import DB_D, get_connection, get_cursor
 from impala_client import describe_columns
