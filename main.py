@@ -1,7 +1,9 @@
 """
 DB 동기화 도구 — 대화형 CLI
 실행: python3 main.py
+       python3 main.py --sync <table_id>
 """
+import sys
 from typing import Any
 
 import db_client
@@ -72,8 +74,9 @@ def handle_select() -> None:
 
 # ── 2. 테이블 동기화 ───────────────────────────────────────────────────
 
-def handle_sync() -> None:
-    table_id = _input_table_id()
+def handle_sync(table_id: int | None = None) -> None:
+    if table_id is None:
+        table_id = _input_table_id()
     if table_id is None:
         return
 
@@ -139,7 +142,34 @@ def handle_delete() -> None:
 
 # ── 메뉴 ──────────────────────────────────────────────────────────────
 
+def _run(func: callable) -> None:
+    """메뉴 모드 예외 처리 — 오류 출력 후 메뉴로 복귀"""
+    try:
+        func()
+    except ConnectionError as e:
+        print(f"\n  [연결 오류] {e}")
+    except Exception as e:
+        print(f"\n  [오류] {type(e).__name__}: {e}")
+
+
 def main() -> None:
+    # --sync <table_id> 인자가 있으면 메뉴 없이 바로 동기화 실행
+    args = sys.argv[1:]
+    if len(args) == 2 and args[0] == "--sync":
+        try:
+            table_id = int(args[1])
+            handle_sync(table_id)
+        except ValueError:
+            print("[오류] table_id는 정수여야 합니다.")
+            sys.exit(1)
+        except ConnectionError as e:
+            print(f"[연결 오류] {e}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"[오류] {type(e).__name__}: {e}")
+            sys.exit(1)
+        return
+
     while True:
         print("\n=== DB 동기화 도구 ===")
         print("1. 테이블 정보 조회")
@@ -148,22 +178,17 @@ def main() -> None:
         print("0. 종료")
         choice = input("선택: ").strip()
 
-        try:
-            if choice == "1":
-                handle_select()
-            elif choice == "2":
-                handle_sync()
-            elif choice == "3":
-                handle_delete()
-            elif choice == "0":
-                print("종료합니다.")
-                break
-            else:
-                print("  1, 2, 3, 0 중에서 선택하세요.")
-        except ConnectionError as e:
-            print(f"\n  [연결 오류] {e}")
-        except Exception as e:
-            print(f"\n  [오류] {type(e).__name__}: {e}")
+        if choice == "1":
+            _run(handle_select)
+        elif choice == "2":
+            _run(handle_sync)
+        elif choice == "3":
+            _run(handle_delete)
+        elif choice == "0":
+            print("종료합니다.")
+            break
+        else:
+            print("  1, 2, 3, 0 중에서 선택하세요.")
 
 
 if __name__ == "__main__":
