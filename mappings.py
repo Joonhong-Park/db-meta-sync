@@ -6,6 +6,12 @@ from dataclasses import dataclass
 
 
 @dataclass
+class TypeMapping:
+    data_type_id: int       # C data_type_id 값
+    display_data_type: str  # C display_data_type 값
+
+
+@dataclass
 class TableMapping:
     source_table: str           # D DB 테이블명
     target_table: str           # C DB 테이블명
@@ -19,6 +25,16 @@ class TableMapping:
 # C DB에서 애플리케이션이 직접 관리하는 timestamp 컬럼 (D→C 동기화 제외)
 # INSERT 시 둘 다 현재시각, UPDATE 시 update_date_ts만 갱신
 C_TIMESTAMP_COLS: tuple[str, str] = ("create_date_ts", "update_date_ts")
+
+# D type_id → C (data_type_id, display_data_type) 변환 매핑
+# 실제 값으로 업데이트 필요
+TYPE_ID_MAP: dict[int, TypeMapping] = {
+    1: TypeMapping(data_type_id=101, display_data_type="varchar"),
+    2: TypeMapping(data_type_id=102, display_data_type="integer"),
+    3: TypeMapping(data_type_id=103, display_data_type="bigint"),
+    4: TypeMapping(data_type_id=104, display_data_type="boolean"),
+    5: TypeMapping(data_type_id=105, display_data_type="timestamp"),
+}
 
 TABLE_MAPPINGS: dict[str, TableMapping] = {
     # d_table_meta : table_id, db, name, ...

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from db_client import DBTarget, get_connection, get_cursor
-from mappings import TABLE_MAPPINGS, C_TIMESTAMP_COLS
+from mappings import TABLE_MAPPINGS, C_TIMESTAMP_COLS, TYPE_ID_MAP, TypeMapping
 
 _META = TABLE_MAPPINGS["table_meta"]
 _COL  = TABLE_MAPPINGS["table_column"]
@@ -30,6 +30,23 @@ def _q(identifier: str) -> str:
 def _map_row(row: dict[str, Any], col_map: dict[str, str]) -> dict[str, Any]:
     """D 행을 C 컬럼명 기준으로 변환"""
     return {col_map[k]: v for k, v in row.items() if k in col_map}
+
+
+def _resolve_type_id(row: dict[str, Any], d_type_id_raw: int | None) -> dict[str, Any]:
+    """D type_id → C (data_type_id, display_data_type) 변환 (매핑 누락 시 ValueError 발생)"""
+    if d_type_id_raw is None:
+        return row
+    if d_type_id_raw not in TYPE_ID_MAP:
+        raise ValueError(
+            f"TYPE_ID_MAP에 없는 type_id: {d_type_id_raw} "
+            f"(column: {row.get('column_name')}) — mappings.py를 확인하세요."
+        )
+    mapping: TypeMapping = TYPE_ID_MAP[d_type_id_raw]
+    return {
+        **row,
+        "data_type_id":      mapping.data_type_id,
+        "display_data_type": mapping.display_data_type,
+    }
 
 
 # ── 데이터 조회 ─────────────────────────────────────────────────────────
@@ -107,8 +124,13 @@ def build_comparison(table_id: int) -> dict[str, Any]:
             meta_diffs.append({"field": c_col, "d_val": d_val, "c_val": c_val, "status": status})
 
     # ── 컬럼 비교 ──────────────────────────────────────────────────────
-    # D 행을 C 컬럼명 공간으로 변환한 뒤 비교
-    mapped_d_cols = [_map_row(r, _COL.column_map) for r in d_cols]
+    # D 행을 C 컬럼명 공간으로 변환 후 type_id → (data_type_id, display_data_type) 매핑 적용
+    # 매핑 누락 시 ValueError 발생 → 동기화 중단
+    mapped_d_cols: list[dict[str, Any]] = []
+    for r in d_cols:
+        mapped = _map_row(r, _COL.column_map)
+        mapped["_d_data_type_raw"] = r.get("data_type")  # 비교화면 D측 표시용 원본 텍스트
+        mapped_d_cols.append(_resolve_type_id(mapped, r.get("type_id")))
 
     d_col_map: dict[tuple[str, Any], dict] = {
         (r["column_name"], r["sort_idx"]): r for r in mapped_d_cols
@@ -138,7 +160,7 @@ def build_comparison(table_id: int) -> dict[str, Any]:
         column_diffs.append({
             "sort_idx":            sort_idx,
             "d_column_name":       d_row.get("column_name")        if d_row else None,
-            "d_data_type":         d_row.get("display_data_type")  if d_row else None,
+            "d_data_type":         d_row.get("_d_data_type_raw")   if d_row else None,
             "c_column_name":       c_row.get("column_name")        if c_row else None,
             "c_display_data_type": c_row.get("display_data_type")  if c_row else None,
             "d_dist_yn":           d_row.get("distribution_yn")    if d_row else None,
