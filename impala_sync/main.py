@@ -16,6 +16,16 @@ from type_map import resolve_type_id
 import db_client
 
 
+def _dist_idx(data_type):
+    """파티션 컬럼 타입 → distribution_idx (timestamp: 1, string계열: 2)"""
+    base = data_type.lower().split("(")[0].strip()
+    if base == "timestamp":
+        return 1
+    if base in ("string", "varchar", "char"):
+        return 2
+    return None
+
+
 def sync_columns(table_id):
     # 1. D DB에서 db, name 조회
     meta = db_client.fetch_one(
@@ -33,27 +43,36 @@ def sync_columns(table_id):
 
     # 2. Impala DESCRIBE FORMATTED
     print(f"  Impala DESCRIBE FORMATTED {full_name} ...")
-    columns = describe_columns(db_name, table_name)
-    if not columns:
+    regular, partitions = describe_columns(db_name, table_name)
+    if not regular:
         print("  [오류] Impala에서 컬럼 정보를 가져올 수 없습니다.")
         sys.exit(1)
-    print(f"  조회된 컬럼 수: {len(columns)}")
+    print(f"  일반 컬럼 {len(regular)}개, 파티션 컬럼 {len(partitions)}개")
 
-    # 3. type_id 매핑 사전 검증 — 미매핑 타입 있으면 중단
-    unmapped = [c for c in columns if resolve_type_id(c["data_type"]) is None]
+    # 3. type_id 매핑 사전 검증
+    all_cols = regular + partitions
+    unmapped = [c for c in all_cols if resolve_type_id(c["data_type"]) is None]
     if unmapped:
         for c in unmapped:
             print(f"  [오류] type_map에 없는 타입: '{c['data_type']}' (column: {c['column_name']})")
         print("  type_map.py의 IMPALA_TYPE_MAP을 업데이트하세요.")
         sys.exit(1)
 
-    # 4. 단일 트랜잭션: 기존 컬럼 전체 삭제 후 새 컬럼 삽입
+    # 4. 파티션 distribution_idx 검증
+    bad_part = [c for c in partitions if _dist_idx(c["data_type"]) is None]
+    if bad_part:
+        for c in bad_part:
+            print(f"  [오류] 파티션 타입 미지원: '{c['data_type']}' (column: {c['column_name']})")
+        sys.exit(1)
+
+    # 5. 단일 트랜잭션: 기존 컬럼 전체 삭제 후 새 컬럼 삽입
     with get_connection(DB_D) as conn:
         with get_cursor(conn) as cur:
             cur.execute(f"DELETE FROM d_table_column WHERE table_id = {table_id}")
             deleted = cur.rowcount
 
-            for sort_idx, col in enumerate(columns, start=1):
+            # 일반 컬럼 (distribution_yn = 'N')
+            for sort_idx, col in enumerate(regular, start=1):
                 col_name  = col["column_name"].replace("'", "''")
                 data_type = col["data_type"].replace("'", "''")
                 type_id   = resolve_type_id(col["data_type"])
@@ -63,7 +82,24 @@ def sync_columns(table_id):
                     f"VALUES ({table_id}, '{col_name}', '{data_type}', {type_id}, {sort_idx}, 'N', NULL)"
                 )
 
-    print(f"  기존 컬럼 {deleted}개 삭제, 새 컬럼 {len(columns)}개 삽입 완료")
+            # 파티션 컬럼 (distribution_yn = 'Y', distribution_idx = 1 or 2)
+            base_idx = len(regular)
+            for i, col in enumerate(partitions, start=1):
+                col_name  = col["column_name"].replace("'", "''")
+                data_type = col["data_type"].replace("'", "''")
+                type_id   = resolve_type_id(col["data_type"])
+                dist_idx  = _dist_idx(col["data_type"])
+                sort_idx  = base_idx + i
+                cur.execute(
+                    f"INSERT INTO d_table_column "
+                    f"(table_id, column_name, data_type, type_id, sort_idx, distribution_yn, distribution_idx) "
+                    f"VALUES ({table_id}, '{col_name}', '{data_type}', {type_id}, {sort_idx}, 'Y', {dist_idx})"
+                )
+
+    print(f"  기존 컬럼 {deleted}개 삭제, 새 컬럼 {len(all_cols)}개 삽입 완료")
+    if partitions:
+        for col in partitions:
+            print(f"    파티션: {col['column_name']} ({col['data_type']}) → distribution_idx={_dist_idx(col['data_type'])}")
 
 
 def main():
