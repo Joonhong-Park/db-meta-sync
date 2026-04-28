@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from db_client import DB_D, get_connection, get_cursor
+from db_client import get_connection, get_cursor
 from impala_client import describe_columns
 from type_map import resolve_type_id
 import db_client
@@ -25,8 +25,7 @@ def _dist_idx(data_type):
 def sync_columns(table_id):
     # 1. D DB에서 db, name 조회
     meta = db_client.fetch_one(
-        f"SELECT table_id, db, name FROM d_table_meta WHERE table_id = {table_id}",
-        target=DB_D,
+        f"SELECT table_id, db, name FROM d_table_meta WHERE table_id = {table_id}"
     )
     if not meta:
         print(f"  [오류] D DB에 table_id {table_id} 가 존재하지 않습니다.")
@@ -62,7 +61,7 @@ def sync_columns(table_id):
         sys.exit(1)
 
     # 5. 단일 트랜잭션: 기존 컬럼 전체 삭제 후 새 컬럼 삽입
-    with get_connection(DB_D) as conn:
+    with get_connection() as conn:
         with get_cursor(conn) as cur:
             cur.execute(f"DELETE FROM d_table_column WHERE table_id = {table_id}")
             deleted = cur.rowcount

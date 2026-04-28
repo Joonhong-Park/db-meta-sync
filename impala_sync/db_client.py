@@ -1,6 +1,5 @@
 """
-PostgreSQL DB 클라이언트
-C서버(SSH 터널 경유), D서버(직접 접속)
+PostgreSQL DB 클라이언트 — D서버 전용
 """
 import psycopg2
 import psycopg2.extras
@@ -8,20 +7,8 @@ from contextlib import contextmanager
 
 import config
 
-DB_C = "C"  # C서버 DB — SSH 리버스 터널 경유 (localhost:15432)
-DB_D = "D"  # D서버 DB — 직접 접속
 
-
-def _build_dsn(target):
-    if target == DB_C:
-        return (
-            f"host={config.C_DB_HOST} "
-            f"port={config.C_DB_PORT} "
-            f"dbname={config.C_DB_NAME} "
-            f"user={config.C_DB_USER} "
-            f"password={config.C_DB_PASSWORD} "
-            f"connect_timeout={config.DB_CONNECT_TIMEOUT}"
-        )
+def _build_dsn():
     return (
         f"host={config.D_DB_HOST} "
         f"port={config.D_DB_PORT} "
@@ -33,22 +20,17 @@ def _build_dsn(target):
 
 
 @contextmanager
-def get_connection(target=DB_C):
+def get_connection():
     """DB 커넥션 컨텍스트 매니저 — 정상 종료 시 commit, 예외 시 rollback"""
     conn = None
     try:
-        conn = psycopg2.connect(_build_dsn(target))
+        conn = psycopg2.connect(_build_dsn())
         yield conn
         conn.commit()
     except psycopg2.OperationalError as e:
         if conn is not None:
             conn.rollback()
-        hint = (
-            "A서버에서 tunnel.sh start를 실행했는지 확인하세요"
-            if target == DB_C
-            else "D서버 접속 정보(config.py)를 확인하세요"
-        )
-        raise ConnectionError(f"[DB-{target}] 연결 실패 ({hint}): {e}") from e
+        raise ConnectionError(f"D서버 접속 실패 (config.py를 확인하세요): {e}") from e
     except psycopg2.DatabaseError:
         if conn is not None:
             conn.rollback()
@@ -69,15 +51,15 @@ def get_cursor(conn):
 
 # ── SELECT ─────────────────────────────────────────────────────────────
 
-def fetch_all(query, target=DB_C):
-    with get_connection(target) as conn:
+def fetch_all(query):
+    with get_connection() as conn:
         with get_cursor(conn) as cur:
             cur.execute(query)
             return [dict(row) for row in cur.fetchall()]
 
 
-def fetch_one(query, target=DB_C):
-    with get_connection(target) as conn:
+def fetch_one(query):
+    with get_connection() as conn:
         with get_cursor(conn) as cur:
             cur.execute(query)
             row = cur.fetchone()
@@ -86,9 +68,9 @@ def fetch_one(query, target=DB_C):
 
 # ── INSERT ─────────────────────────────────────────────────────────────
 
-def insert_one(query, target=DB_C):
+def insert_one(query):
     """RETURNING 절이 있으면 삽입된 행을 반환, 없으면 None"""
-    with get_connection(target) as conn:
+    with get_connection() as conn:
         with get_cursor(conn) as cur:
             cur.execute(query)
             if cur.description:
@@ -99,8 +81,8 @@ def insert_one(query, target=DB_C):
 
 # ── UPDATE ─────────────────────────────────────────────────────────────
 
-def update(query, target=DB_C):
-    with get_connection(target) as conn:
+def update(query):
+    with get_connection() as conn:
         with get_cursor(conn) as cur:
             cur.execute(query)
             return cur.rowcount
@@ -108,8 +90,8 @@ def update(query, target=DB_C):
 
 # ── DELETE ─────────────────────────────────────────────────────────────
 
-def delete(query, target=DB_C):
-    with get_connection(target) as conn:
+def delete(query):
+    with get_connection() as conn:
         with get_cursor(conn) as cur:
             cur.execute(query)
             return cur.rowcount
