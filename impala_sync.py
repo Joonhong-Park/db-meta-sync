@@ -138,7 +138,7 @@ def resolve_type_id(impala_type):
 
 # ── 동기화 실행 ────────────────────────────────────────────────────────
 
-def sync_columns(table_id):
+def sync_columns(table_id, dry_run=False):
     rows = execute_query(
         f"SELECT table_id, db, name FROM d_table_meta WHERE table_id = {table_id}",
         fetch_result=True,
@@ -173,80 +173,94 @@ def sync_columns(table_id):
         for idx, col in enumerate(columns, start=1)
     }
 
-    with get_connection() as conn:
-        with get_cursor(conn) as cur:
-            cur.execute(
-                f"SELECT column_name, data_type_id, sort_idx "
-                f"FROM d_table_column WHERE table_id = {table_id}"
+    existing = execute_query(
+        f"SELECT column_name, data_type_id, sort_idx "
+        f"FROM d_table_column WHERE table_id = {table_id}",
+        fetch_result=True,
+    )
+    existing_map = {row["column_name"]: row for row in existing}
+
+    partitions = execute_query(
+        f"SELECT partition_name FROM d_table_partition WHERE table_id = {table_id}",
+        fetch_result=True,
+    )
+    partition_names = [row["partition_name"] for row in partitions if row["partition_name"]]
+
+    queries = []
+
+    for col_name, new in new_map.items():
+        type_id  = new["type_id"]
+        sort_idx = new["sort_idx"]
+
+        if col_name not in existing_map:
+            queries.append(
+                f"INSERT INTO d_table_column "
+                f"(table_id, column_name, data_type_id, sort_idx, distribution_yn, distribution_idx, create_date_ts, update_date_ts) "
+                f"VALUES ({table_id}, '{col_name}', {type_id}, {sort_idx}, 'N', NULL, now(), now())"
             )
-            existing = {row["column_name"]: row for row in cur.fetchall()}
-
-            inserted = updated = deleted = 0
-
-            for col_name, new in new_map.items():
-                type_id  = new["type_id"]
-                sort_idx = new["sort_idx"]
-
-                if col_name not in existing:
-                    cur.execute(
-                        f"INSERT INTO d_table_column "
-                        f"(table_id, column_name, data_type_id, sort_idx, distribution_yn, distribution_idx, create_date_ts, update_date_ts) "
-                        f"VALUES ({table_id}, '{col_name}', {type_id}, {sort_idx}, 'N', NULL, now(), now())"
-                    )
-                    inserted += 1
-                else:
-                    ex = existing[col_name]
-                    if ex["data_type_id"] != type_id or ex["sort_idx"] != sort_idx:
-                        cur.execute(
-                            f"UPDATE d_table_column "
-                            f"SET data_type_id = {type_id}, sort_idx = {sort_idx}, "
-                            f"distribution_yn = 'N', distribution_idx = NULL, update_date_ts = now() "
-                            f"WHERE table_id = {table_id} AND column_name = '{col_name}'"
-                        )
-                        updated += 1
-
-            for col_name in existing:
-                if col_name not in new_map:
-                    cur.execute(
-                        f"DELETE FROM d_table_column "
-                        f"WHERE table_id = {table_id} AND column_name = '{col_name}'"
-                    )
-                    deleted += 1
-
-            cur.execute(
-                f"SELECT partition_name FROM d_table_partition WHERE table_id = {table_id}"
-            )
-            partitions = [row["partition_name"] for row in cur.fetchall() if row["partition_name"]]
-
-            for dist_idx, part_name in enumerate(partitions, start=1):
-                cur.execute(
+        else:
+            ex = existing_map[col_name]
+            if ex["data_type_id"] != type_id or ex["sort_idx"] != sort_idx:
+                queries.append(
                     f"UPDATE d_table_column "
-                    f"SET distribution_yn = 'Y', distribution_idx = {dist_idx} "
-                    f"WHERE table_id = {table_id} "
-                    f"AND column_name = '{part_name}'"
+                    f"SET data_type_id = {type_id}, sort_idx = {sort_idx}, "
+                    f"distribution_yn = 'N', distribution_idx = NULL, update_date_ts = now() "
+                    f"WHERE table_id = {table_id} AND column_name = '{col_name}'"
                 )
 
+    for col_name in existing_map:
+        if col_name not in new_map:
+            queries.append(
+                f"DELETE FROM d_table_column "
+                f"WHERE table_id = {table_id} AND column_name = '{col_name}'"
+            )
+
+    for dist_idx, part_name in enumerate(partition_names, start=1):
+        queries.append(
+            f"UPDATE d_table_column "
+            f"SET distribution_yn = 'Y', distribution_idx = {dist_idx} "
+            f"WHERE table_id = {table_id} AND column_name = '{part_name}'"
+        )
+
+    if dry_run:
+        print("  [dry-run] 실행될 쿼리:")
+        for q in queries:
+            print(f"    {q}")
+        return
+
+    with get_connection() as conn:
+        with get_cursor(conn) as cur:
+            for q in queries:
+                cur.execute(q)
+
+    inserted = sum(1 for q in queries if q.startswith("INSERT"))
+    updated  = sum(1 for q in queries if q.startswith("UPDATE"))
+    deleted  = sum(1 for q in queries if q.startswith("DELETE"))
     print(f"  추가 {inserted} / 수정 {updated} / 삭제 {deleted}")
-    if partitions:
-        for dist_idx, part_name in enumerate(partitions, start=1):
+    if partition_names:
+        for dist_idx, part_name in enumerate(partition_names, start=1):
             print(f"    파티션: {part_name} → distribution_idx={dist_idx}")
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) != 2:
-        print("사용법: python3 impala_sync.py <table_id>")
+    args    = sys.argv[1:]
+    dry_run = "--dry-run" in args
+    args    = [a for a in args if a != "--dry-run"]
+
+    if len(args) != 1:
+        print("사용법: python3 impala_sync.py <table_id> [--dry-run]")
         sys.exit(1)
 
     try:
-        table_id = int(sys.argv[1])
+        table_id = int(args[0])
     except ValueError:
         print("[오류] table_id는 정수여야 합니다.")
         sys.exit(1)
 
     try:
-        sync_columns(table_id)
+        sync_columns(table_id, dry_run=dry_run)
     except ConnectionError as e:
         print(f"[연결 오류] {e}")
         sys.exit(1)
