@@ -3,7 +3,6 @@ D ↔ C DB 메타·컬럼 동기화 도구
 실행: python3 c_meta_sync.py
        python3 c_meta_sync.py --sync <table_id>
 """
-import os
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -16,21 +15,21 @@ import psycopg2.extras
 # ── 설정 ──────────────────────────────────────────────────────────────
 
 _C_DB_CONFIG = {
-    "host":            os.environ.get("C_DB_HOST",     "localhost"),
-    "port":            int(os.environ.get("C_DB_PORT", "15432")),
-    "dbname":          os.environ.get("C_DB_NAME",     "your_c_database"),
-    "user":            os.environ.get("C_DB_USER",     "your_c_username"),
-    "password":        os.environ.get("C_DB_PASSWORD", "your_c_password"),
-    "connect_timeout": int(os.environ.get("DB_CONNECT_TIMEOUT", "10")),
+    "host":            "localhost",
+    "port":            15432,
+    "dbname":          "your_c_database",
+    "user":            "your_c_username",
+    "password":        "your_c_password",
+    "connect_timeout": 10,
 }
 
 _D_DB_CONFIG = {
-    "host":            os.environ.get("D_DB_HOST",     "d_server_host"),
-    "port":            int(os.environ.get("D_DB_PORT", "5432")),
-    "dbname":          os.environ.get("D_DB_NAME",     "your_d_database"),
-    "user":            os.environ.get("D_DB_USER",     "your_d_username"),
-    "password":        os.environ.get("D_DB_PASSWORD", "your_d_password"),
-    "connect_timeout": int(os.environ.get("DB_CONNECT_TIMEOUT", "10")),
+    "host":            "d_server_host",
+    "port":            5432,
+    "dbname":          "your_d_database",
+    "user":            "your_d_username",
+    "password":        "your_d_password",
+    "connect_timeout": 10,
 }
 
 DB_C = "C"
@@ -201,7 +200,7 @@ def _fetch_c_meta(table_id):
     cols   = ", ".join(_q(c) for c in _META.column_map.values())
     result = execute_query(
         f'SELECT {cols} FROM {_q(_META.target_table)} WHERE {_q("table_id")} = {table_id}',
-        target=DB_C, fetch_result=True,
+        fetch_result=True,
     )
     return result[0] if result else None
 
@@ -220,7 +219,7 @@ def _fetch_c_columns(table_id):
     return execute_query(
         f'SELECT {cols} FROM {_q(_COL.target_table)} '
         f'WHERE {_q("table_id")} = {table_id} ORDER BY {_q("sort_idx")}',
-        target=DB_C, fetch_result=True,
+        fetch_result=True,
     )
 
 
@@ -342,7 +341,7 @@ def print_comparison(cmp):
         )
 
     dist_rows = [d for d in cmp["column_diffs"]
-                 if any([d["d_dist_yn"], d["d_dist_idx"], d["c_dist_yn"], d["c_dist_idx"]])]
+                 if any((d["d_dist_yn"], d["d_dist_idx"], d["c_dist_yn"], d["c_dist_idx"]))]
     if dist_rows:
         print("\n[distribution 정보]")
         _print_rows(

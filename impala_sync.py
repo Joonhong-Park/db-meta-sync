@@ -2,7 +2,6 @@
 Impala → D DB 컬럼 동기화 도구
 실행: python3 impala_sync.py <table_id>
 """
-import os
 import sys
 from contextlib import contextmanager
 
@@ -14,22 +13,22 @@ from impala.dbapi import connect as impala_connect
 # ── 설정 ──────────────────────────────────────────────────────────────
 
 _D_DB_CONFIG = {
-    "host":            os.environ.get("D_DB_HOST",     "d_server_host"),
-    "port":            int(os.environ.get("D_DB_PORT", "5432")),
-    "dbname":          os.environ.get("D_DB_NAME",     "your_d_database"),
-    "user":            os.environ.get("D_DB_USER",     "your_d_username"),
-    "password":        os.environ.get("D_DB_PASSWORD", "your_d_password"),
-    "connect_timeout": int(os.environ.get("DB_CONNECT_TIMEOUT", "10")),
+    "host":            "d_server_host",
+    "port":            5432,
+    "dbname":          "your_d_database",
+    "user":            "your_d_username",
+    "password":        "your_d_password",
+    "connect_timeout": 10,
 }
 
 _IMPALA_CONFIG = {
-    "host":            os.environ.get("IMPALA_HOST",     "localhost"),
-    "port":            int(os.environ.get("IMPALA_PORT", "21050")),
-    "user":            os.environ.get("IMPALA_USER",     "") or None,
-    "password":        os.environ.get("IMPALA_PASSWORD", "") or None,
-    "auth_mechanism":  os.environ.get("IMPALA_AUTH",     "PLAIN"),
-    "use_ssl":         os.environ.get("IMPALA_USE_SSL",  "false").lower() == "true",
-    "timeout":         int(os.environ.get("IMPALA_TIMEOUT", "30")),
+    "host":           "localhost",
+    "port":           21050,
+    "user":           None,
+    "password":       None,
+    "auth_mechanism": "PLAIN",
+    "use_ssl":        False,
+    "timeout":        30,
 }
 
 # Impala 타입 → D type_id  (실제 D DB type_id 값으로 업데이트 필요)
@@ -208,9 +207,8 @@ def sync_columns(table_id):
         print("  [오류] Impala에서 컬럼 정보를 가져올 수 없습니다.")
         sys.exit(1)
 
-    regular   = [c for c in columns if not c["is_partition"]]
     partition = [c for c in columns if c["is_partition"]]
-    print(f"  일반 컬럼 {len(regular)}개, 파티션 컬럼 {len(partition)}개")
+    print(f"  일반 컬럼 {len(columns) - len(partition)}개, 파티션 컬럼 {len(partition)}개")
 
     unmapped = [c for c in columns if resolve_type_id(c["data_type"]) is None]
     if unmapped:
