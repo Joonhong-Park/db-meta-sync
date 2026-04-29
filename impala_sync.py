@@ -170,7 +170,7 @@ def sync_columns(table_id, dry_run=False):
 
     new_map = {
         col["column_name"]: {"type_id": resolve_type_id(col["data_type"]), "sort_idx": idx}
-        for idx, col in enumerate(columns, start=1)
+        for idx, col in enumerate(columns, start=0)
     }
 
     existing = execute_query(
