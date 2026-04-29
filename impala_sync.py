@@ -168,21 +168,55 @@ def sync_columns(table_id):
         print("  IMPALA_TYPE_MAP을 업데이트하세요.")
         sys.exit(1)
 
+    new_map = {
+        col["column_name"]: {"data_type": col["data_type"], "sort_idx": idx}
+        for idx, col in enumerate(columns, start=1)
+    }
+
     with get_connection() as conn:
         with get_cursor(conn) as cur:
-            cur.execute(f"DELETE FROM d_table_column WHERE table_id = {table_id}")
-            deleted = cur.rowcount
+            cur.execute(
+                f"SELECT column_name, data_type, type_id, sort_idx "
+                f"FROM d_table_column WHERE table_id = {table_id}"
+            )
+            existing = {row["column_name"]: row for row in cur.fetchall()}
 
-            for sort_idx, col in enumerate(columns, start=1):
-                col_name  = col["column_name"].replace("'", "''")
-                data_type = col["data_type"].replace("'", "''")
-                type_id   = resolve_type_id(col["data_type"])
+            inserted = updated = deleted = 0
 
-                cur.execute(
-                    f"INSERT INTO d_table_column "
-                    f"(table_id, column_name, data_type, type_id, sort_idx) "
-                    f"VALUES ({table_id}, '{col_name}', '{data_type}', {type_id}, {sort_idx})"
-                )
+            for col_name, new in new_map.items():
+                data_type = new["data_type"].replace("'", "''")
+                sort_idx  = new["sort_idx"]
+                type_id   = resolve_type_id(new["data_type"])
+                escaped   = col_name.replace("'", "''")
+
+                if col_name not in existing:
+                    cur.execute(
+                        f"INSERT INTO d_table_column "
+                        f"(table_id, column_name, data_type, type_id, sort_idx, create_date_ts, update_date_ts) "
+                        f"VALUES ({table_id}, '{escaped}', '{data_type}', {type_id}, {sort_idx}, now(), now())"
+                    )
+                    inserted += 1
+                else:
+                    ex = existing[col_name]
+                    if (ex["data_type"] != new["data_type"]
+                            or ex["type_id"] != type_id
+                            or ex["sort_idx"] != sort_idx):
+                        cur.execute(
+                            f"UPDATE d_table_column "
+                            f"SET data_type = '{data_type}', type_id = {type_id}, "
+                            f"sort_idx = {sort_idx}, update_date_ts = now() "
+                            f"WHERE table_id = {table_id} AND column_name = '{escaped}'"
+                        )
+                        updated += 1
+
+            for col_name in existing:
+                if col_name not in new_map:
+                    cur.execute(
+                        f"DELETE FROM d_table_column "
+                        f"WHERE table_id = {table_id} "
+                        f"AND column_name = '{col_name.replace(chr(39), chr(39) * 2)}'"
+                    )
+                    deleted += 1
 
             cur.execute(
                 f"SELECT partition_name FROM d_table_partition WHERE table_id = {table_id}"
@@ -197,7 +231,7 @@ def sync_columns(table_id):
                     f"AND column_name = '{part_name.replace(chr(39), chr(39) * 2)}'"
                 )
 
-    print(f"  기존 컬럼 {deleted}개 삭제, 새 컬럼 {len(columns)}개 삽입 완료")
+    print(f"  추가 {inserted} / 수정 {updated} / 삭제 {deleted}")
     if partitions:
         for dist_idx, part_name in enumerate(partitions, start=1):
             print(f"    파티션: {part_name} → distribution_idx={dist_idx}")
