@@ -10,26 +10,24 @@ B서버에서 실행되는 코드베이스. 두 PostgreSQL DB에 접근한다.
 - **D서버 DB**: B서버에서 직접 접속
 - sudo 권한 없음, autossh 없음
 
-## 디렉토리 구조
-
-두 도구는 완전히 독립적으로 동작하며 각 디렉토리 내에서 단독 실행된다.
+## 파일 구성
 
 ```
-c_table_sync/    D ↔ C DB 메타·컬럼 동기화 CLI
-impala_sync/     Impala → D DB 컬럼 동기화
+c_meta_sync.py   D ↔ C DB 메타·컬럼 동기화 CLI (단일 파일)
+impala_sync.py   Impala → D DB 컬럼 동기화 (단일 파일)
+tunnel.sh        A서버 실행용 SSH 리버스 터널 유지 스크립트
 ```
 
 ---
 
-## c_table_sync
+## c_meta_sync.py
 
 ### 실행
 
 ```bash
 pip3 install --user psycopg2-binary   # 최초 1회
-cd c_table_sync
-python3 main.py                        # 대화형 메뉴 실행
-python3 main.py --sync <table_id>      # 동기화 직접 실행
+python3 c_meta_sync.py                # 대화형 메뉴
+python3 c_meta_sync.py --sync <table_id>  # 동기화 직접 실행
 ```
 
 ### SSH 터널 관리 (A서버에서 실행)
@@ -41,25 +39,27 @@ chmod +x tunnel.sh
 
 재부팅 자동 시작: `crontab -e` → `@reboot sleep 30 && /home/my_username/tunnel.sh start`
 
-### 파일 구성
+### 파일 내부 구성 (섹션 순서)
 
 ```
-config.py        접속 정보 (C_DB_*, D_DB_*) — 환경변수 오버라이드 가능
-db_client.py     DB_C / DB_D 상수 + _C/_D_DB_CONFIG 딕셔너리 + execute_query
-mappings.py      TableMapping 데이터클래스 + C_TIMESTAMP_COLS + TABLE_MAPPINGS
-sync_manager.py  비교 데이터 생성 / 비교화면 출력 / 동기화 실행
-main.py          대화형 메뉴 (1.조회 / 2.동기화 / 3.삭제)
-tunnel.sh        A서버 실행용 SSH 리버스 터널 유지 스크립트
+설정          _C_DB_CONFIG / _D_DB_CONFIG 딕셔너리
+DB 클라이언트  get_connection(target) / get_cursor / execute_query
+매핑 정의     TypeMapping, TableMapping, TABLE_MAPPINGS, TYPE_ID_MAP
+동기화 유틸   _q, _val, _map_row, _resolve_type_id
+데이터 조회   _fetch_d/c_meta, _fetch_d/c_columns
+비교 로직     build_comparison, print_comparison
+동기화 실행   apply_sync (_sync_meta + _sync_columns, 단일 트랜잭션)
+메뉴 핸들러  handle_select / handle_sync / handle_delete
 ```
 
-### db_client API
+### execute_query API
 
 ```python
 execute_query(query, target=DB_C, fetch_result=False, commit=False)
 # fetch_result=True  → list[dict] 반환 (SELECT)
 # commit=True        → 영향받은 행 수 반환 (INSERT/UPDATE/DELETE)
 
-get_connection(target)  # 트랜잭션이 필요한 경우 직접 사용
+get_connection(target)  # 단일 트랜잭션이 필요한 경우 직접 사용
 get_cursor(conn)
 ```
 
@@ -67,7 +67,7 @@ get_cursor(conn)
 
 - **C DB**: 모든 테이블명·컬럼명에 쌍따옴표 필수 (`"c_table_meta"`, `"table_id"`)
 - **D DB**: 쌍따옴표 불필요
-- sync_manager.py 내 `_q(identifier)` 헬퍼로 처리
+- `_q(identifier)` 헬퍼로 처리
 
 ### 테이블 매핑 구조
 
@@ -95,7 +95,7 @@ get_cursor(conn)
 
 ### 동기화 흐름 (table_id 단건)
 
-1. D, C 양쪽에서 지정 컬럼만 SELECT (SELECT * 미사용)
+1. D, C 양쪽에서 지정 컬럼만 SELECT
 2. D 행을 C 컬럼명 공간으로 변환 (`_map_row`)
 3. 컬럼 매칭: `(column_name, sort_idx)` 두 값 모두 일치해야 동일 컬럼
 4. 비교화면 출력 → 확인 입력
@@ -106,39 +106,27 @@ get_cursor(conn)
 - 동기화는 항상 완전 일치 (D가 소스)
 - column 삭제 순서: `c_table_column` 먼저, `c_table_meta` 나중 (FK 순서)
 - `tunnel.sh`는 `pkill` 미사용 — `trap` + SSH PID 직접 추적으로 자식 프로세스 정리
-- 새 테이블 추가 시 `mappings.py`의 `TABLE_MAPPINGS`에만 항목 추가
+- 새 테이블 추가 시 파일 내 `TABLE_MAPPINGS`에만 항목 추가
 
 ---
 
-## impala_sync
+## impala_sync.py
 
 ### 실행
 
 ```bash
 pip3 install --user impyla   # 최초 1회
-cd impala_sync
-python3 main.py <table_id>
+python3 impala_sync.py <table_id>
 ```
 
-### 파일 구성
+### 파일 내부 구성 (섹션 순서)
 
 ```
-config.py        D DB 접속 정보 — 환경변수 오버라이드 가능
-db_client.py     _DB_CONFIG 딕셔너리 + execute_query (D서버 전용)
-impala_config.py Impala 접속 정보 — 환경변수 오버라이드 가능
-impala_client.py Impala 연결 + DESCRIBE FORMATTED 파싱
-type_map.py      Impala 타입 텍스트 → D type_id 매핑
-main.py          진입점
-```
-
-### db_client API
-
-```python
-execute_query(query, fetch_result=False, commit=False)
-# D서버 전용 — target 인자 없음
-
-get_connection()  # 트랜잭션이 필요한 경우 직접 사용
-get_cursor(conn)
+설정          _D_DB_CONFIG / _IMPALA_CONFIG 딕셔너리, IMPALA_TYPE_MAP
+D DB 클라이언트 get_connection / get_cursor / execute_query (D서버 전용)
+Impala 클라이언트 _impala_connection / describe_columns
+타입 매핑     resolve_type_id / _dist_idx
+동기화 실행   sync_columns
 ```
 
 ### 동작 흐름
@@ -155,19 +143,21 @@ get_cursor(conn)
 [{"column_name": str, "data_type": str, "is_partition": bool}, ...]
 ```
 
-- 일반 테이블: 파티션 컬럼은 `# Partition Information` 섹션에서 파싱, 순서는 일반 컬럼 뒤
-- Iceberg 테이블: 파티션 컬럼은 `# Partition Transform Information` 섹션에서 이름 수집 후 일반 컬럼 섹션의 data_type 사용, 원래 위치 유지
+- 일반 테이블: `# Partition Information` 섹션에서 파티션 컬럼 파싱, 순서는 일반 컬럼 뒤
+- Iceberg: `# Partition Transform Information` 섹션에서 이름 수집 후 일반 컬럼 섹션의 data_type 사용, 원래 위치 유지
 
-### 파티션 컬럼 규칙
+### 타입 및 파티션 규칙
 
-| 구분 | distribution_yn | distribution_idx |
-|------|----------------|-----------------|
-| 일반 컬럼 | `NULL` | `NULL` |
-| 파티션 (timestamp) | `'Y'` | `1` |
-| 파티션 (string/varchar/char) | `'Y'` | `2` |
+사용 가능한 타입: `string`, `int`, `bigint`/`long`, `double`, `timestamp`, `date`
+
+| 컬럼 구분 | distribution_yn | distribution_idx |
+|----------|----------------|-----------------|
+| 일반 컬럼 | NULL | NULL |
+| 파티션 (timestamp) | Y | 1 |
+| 파티션 (string) | Y | 2 |
 
 ### 수정 필요 항목
 
-- `impala_config.py`: `IMPALA_HOST`, `IMPALA_PORT`, 인증 방식
-- `type_map.py`: `IMPALA_TYPE_MAP` — Impala 타입 → 실제 D type_id 값
-- `config.py`: D DB 접속 정보
+- `_D_DB_CONFIG`: D DB 접속 정보
+- `_IMPALA_CONFIG`: Impala 접속 정보
+- `IMPALA_TYPE_MAP`: Impala 타입 → 실제 D type_id 값

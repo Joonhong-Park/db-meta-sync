@@ -17,9 +17,7 @@ D서버 DB의 테이블 메타·컬럼 정보를 C서버 DB와 동기화하고, 
 
 ---
 
-## c_table_sync
-
-D ↔ C DB 메타·컬럼 동기화 대화형 CLI
+## c_meta_sync.py — D ↔ C DB 동기화
 
 ### 설치
 
@@ -30,14 +28,8 @@ pip3 install --user psycopg2-binary
 ### SSH 터널 설정 (A서버에서 실행)
 
 ```bash
-chmod +x c_table_sync/tunnel.sh
-cd c_table_sync
-
-./tunnel.sh start    # 시작
-./tunnel.sh stop     # 중지
-./tunnel.sh restart  # 재시작
-./tunnel.sh status   # 상태 확인
-./tunnel.sh log      # 실시간 로그
+chmod +x tunnel.sh
+./tunnel.sh start | stop | restart | status | log
 ```
 
 **재부팅 자동 시작** (`crontab -e`):
@@ -47,17 +39,15 @@ cd c_table_sync
 
 ### 접속 정보 설정
 
-`c_table_sync/config.py` 또는 환경변수로 설정:
+`c_meta_sync.py` 상단의 `_C_DB_CONFIG` / `_D_DB_CONFIG` 또는 환경변수로 설정:
 
 ```bash
-# C서버 DB (SSH 터널)
 export C_DB_HOST=localhost
 export C_DB_PORT=15432
 export C_DB_NAME=your_c_database
 export C_DB_USER=your_c_username
 export C_DB_PASSWORD=your_c_password
 
-# D서버 DB
 export D_DB_HOST=d_server_host
 export D_DB_PORT=5432
 export D_DB_NAME=your_d_database
@@ -68,9 +58,8 @@ export D_DB_PASSWORD=your_d_password
 ### 실행
 
 ```bash
-cd c_table_sync
-python3 main.py                   # 대화형 메뉴
-python3 main.py --sync <table_id> # 동기화 직접 실행
+python3 c_meta_sync.py                    # 대화형 메뉴
+python3 c_meta_sync.py --sync <table_id>  # 동기화 직접 실행
 ```
 
 ```
@@ -102,9 +91,7 @@ python3 main.py --sync <table_id> # 동기화 직접 실행
 
 ---
 
-## impala_sync
-
-Impala 테이블 스키마를 D DB `d_table_column`에 반영하는 CLI
+## impala_sync.py — Impala → D DB 컬럼 동기화
 
 ### 설치
 
@@ -114,17 +101,15 @@ pip3 install --user impyla
 
 ### 접속 정보 설정
 
-`impala_sync/config.py` (D DB) 및 `impala_sync/impala_config.py` (Impala) 수정:
+`impala_sync.py` 상단의 `_D_DB_CONFIG` / `_IMPALA_CONFIG` 또는 환경변수로 설정:
 
 ```bash
-# D서버 DB
 export D_DB_HOST=d_server_host
 export D_DB_PORT=5432
 export D_DB_NAME=your_d_database
 export D_DB_USER=your_d_username
 export D_DB_PASSWORD=your_d_password
 
-# Impala
 export IMPALA_HOST=impala_host
 export IMPALA_PORT=21050
 export IMPALA_AUTH=PLAIN   # PLAIN / GSSAPI / LDAP
@@ -133,8 +118,7 @@ export IMPALA_AUTH=PLAIN   # PLAIN / GSSAPI / LDAP
 ### 실행
 
 ```bash
-cd impala_sync
-python3 main.py <table_id>
+python3 impala_sync.py <table_id>
 ```
 
 ### 동작 흐름
@@ -148,8 +132,8 @@ python3 main.py <table_id>
 |----------|----------------|-----------------|
 | 일반 컬럼 | NULL | NULL |
 | 파티션 (timestamp) | Y | 1 |
-| 파티션 (string계열) | Y | 2 |
+| 파티션 (string) | Y | 2 |
 
-### type_map 설정
+사용 가능한 타입: `string`, `int`, `bigint`/`long`, `double`, `timestamp`, `date`
 
-`impala_sync/type_map.py`의 `IMPALA_TYPE_MAP`에 Impala 타입 → D `type_id` 매핑 값 설정 필요
+타입 매핑은 `impala_sync.py` 상단의 `IMPALA_TYPE_MAP`에서 실제 D type_id 값으로 업데이트 필요
