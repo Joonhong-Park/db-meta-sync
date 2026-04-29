@@ -137,22 +137,3 @@ python3 impala_sync.py <table_id>
 사용 가능한 타입: `string`, `int`, `bigint`/`long`, `double`, `timestamp`, `date`
 
 타입 매핑은 `impala_sync.py` 상단의 `IMPALA_TYPE_MAP`에서 실제 D type_id 값으로 업데이트 필요
-
-```
-from pyspark.sql.functions import regexp_replace, to_timestamp, date_format, when, col
-
-def convert_korean_datetime(column_name):
-    """오전/오후 포함 datetime 문자열 → yyyy-MM-dd HH:mm:ss 변환"""
-    c = col(column_name)
-    return when(c.contains("오후"),
-        date_format(
-            to_timestamp(regexp_replace(c, "오후 ", ""), "yyyy-MM-dd h:mm:ss"),
-            "yyyy-MM-dd HH:mm:ss"
-        )
-    ).otherwise(
-        date_format(
-            to_timestamp(regexp_replace(c, "오전 ", ""), "yyyy-MM-dd h:mm:ss"),
-            "yyyy-MM-dd HH:mm:ss"
-        )
-    )
-```
