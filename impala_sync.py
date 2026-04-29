@@ -187,7 +187,7 @@ def sync_columns(table_id):
             cur.execute(
                 f"SELECT partition_name FROM d_table_partition WHERE table_id = {table_id}"
             )
-            partitions = [row["partition_name"] for row in cur.fetchall()]
+            partitions = [row["partition_name"] for row in cur.fetchall() if row["partition_name"]]
 
             for dist_idx, part_name in enumerate(partitions, start=1):
                 cur.execute(
