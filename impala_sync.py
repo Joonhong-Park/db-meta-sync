@@ -104,7 +104,7 @@ def _impala_connection():
 
 def describe_columns(db_name, table_name):
     """
-    DESCRIBE FORMATTED {db}.{table} 실행 후 일반 컬럼 목록만 반환
+    Iceberg 테이블 전용. DESCRIBE FORMATTED {db}.{table} 실행 후 컬럼 목록 반환.
 
     반환: [{"column_name": str, "data_type": str}, ...]
     """
@@ -112,6 +112,10 @@ def describe_columns(db_name, table_name):
         with conn.cursor() as cur:
             cur.execute(f"DESCRIBE FORMATTED {db_name}.{table_name}")
             rows = cur.fetchall()
+
+    section_headers = {(row[0] or "").strip() for row in rows if (row[0] or "").strip().startswith("#")}
+    if "# Partition Transform Information" not in section_headers:
+        raise ValueError(f"{db_name}.{table_name} 은 Iceberg 테이블이 아닙니다.")
 
     columns: list[dict[str, str]] = []
     for row in rows:
