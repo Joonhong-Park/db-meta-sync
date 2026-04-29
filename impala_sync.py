@@ -113,7 +113,7 @@ def describe_columns(db_name, table_name):
             cur.execute(f"DESCRIBE FORMATTED {db_name}.{table_name}")
             rows = cur.fetchall()
 
-    columns = []
+    columns: list[dict[str, str]] = []
     for row in rows:
         col_name = (row[0] or "").strip()
         if not col_name or col_name.startswith("#"):
