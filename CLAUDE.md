@@ -125,7 +125,7 @@ python3 impala_sync.py <table_id>
 설정          _D_DB_CONFIG / _IMPALA_CONFIG 딕셔너리, IMPALA_TYPE_MAP
 D DB 클라이언트 get_connection / get_cursor / execute_query (D서버 전용)
 Impala 클라이언트 _impala_connection / describe_columns
-타입 매핑     resolve_type_id / _dist_idx
+타입 매핑     resolve_type_id
 동기화 실행   sync_columns
 ```
 
@@ -133,28 +133,15 @@ Impala 클라이언트 _impala_connection / describe_columns
 
 1. D DB에서 `table_id` → `db`, `name` 조회
 2. Impala `DESCRIBE FORMATTED {db}.{name}` 실행
-3. 일반 컬럼 / 파티션 컬럼 분리 파싱 (일반 테이블 + Iceberg 모두 지원)
+3. 컬럼 파싱: `# col_name` 헤더·빈 행 스킵, 첫 번째 `#` 섹션 또는 빈 행에서 종료
 4. type_id 매핑 사전 검증 (미매핑 타입 있으면 중단)
 5. 단일 트랜잭션: `d_table_column` 기존 행 삭제 후 새 컬럼 삽입
 
 ### describe_columns 반환 형식
 
 ```python
-[{"column_name": str, "data_type": str, "is_partition": bool}, ...]
+[{"column_name": str, "data_type": str}, ...]
 ```
-
-- 일반 테이블: `# Partition Information` 섹션에서 파티션 컬럼 파싱, 순서는 일반 컬럼 뒤
-- Iceberg: `# Partition Transform Information` 섹션에서 이름 수집 후 일반 컬럼 섹션의 data_type 사용, 원래 위치 유지
-
-### 타입 및 파티션 규칙
-
-사용 가능한 타입: `string`, `int`, `bigint`/`long`, `double`, `timestamp`, `date`
-
-| 컬럼 구분 | distribution_yn | distribution_idx |
-|----------|----------------|-----------------|
-| 일반 컬럼 | NULL | NULL |
-| 파티션 (timestamp) | Y | 1 |
-| 파티션 (string) | Y | 2 |
 
 ### 수정 필요 항목
 

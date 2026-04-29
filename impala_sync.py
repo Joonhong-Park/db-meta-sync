@@ -104,65 +104,23 @@ def _impala_connection():
 
 def describe_columns(db_name, table_name):
     """
-    DESCRIBE FORMATTED {db}.{table} 실행 후 컬럼 목록을 순서 그대로 반환
+    DESCRIBE FORMATTED {db}.{table} 실행 후 일반 컬럼 목록만 반환
 
-    반환: [{"column_name": str, "data_type": str, "is_partition": bool}, ...]
-
-    - 일반 테이블 : 파티션 컬럼은 # Partition Information 섹션에서 파싱
-    - Iceberg 테이블: 파티션 컬럼은 # Partition Transform Information 섹션에서
-                      이름만 수집 후 일반 컬럼 섹션의 data_type 사용 (순서 유지)
+    반환: [{"column_name": str, "data_type": str}, ...]
     """
     with _impala_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(f"DESCRIBE FORMATTED {db_name}.{table_name}")
             rows = cur.fetchall()
 
-    columns   = []
-    split_idx = 0
-    for i, row in enumerate(rows):
+    columns = []
+    for row in rows:
         col_name = (row[0] or "").strip()
         if not col_name or col_name.startswith("#"):
-            split_idx = i
-            break
-        columns.append({"column_name": col_name, "data_type": (row[1] or "").strip(), "is_partition": False})
-
-    in_partition       = False
-    skip_next_header   = False
-    is_iceberg         = False
-    iceberg_part_names = set()
-
-    for row in rows[split_idx:]:
-        col_name  = (row[0] or "").strip()
-        data_type = (row[1] or "").strip()
-
-        if col_name in ("# Partition Information", "# Partition Transform Information"):
-            in_partition     = True
-            skip_next_header = True
-            is_iceberg       = (col_name == "# Partition Transform Information")
-            continue
-
-        if not in_partition:
-            continue
-
-        if col_name.startswith("#"):
-            if skip_next_header:
-                skip_next_header = False
-            else:
+            if columns:
                 break
             continue
-
-        if not col_name:
-            break
-
-        if is_iceberg:
-            iceberg_part_names.add(col_name)
-        else:
-            columns.append({"column_name": col_name, "data_type": data_type, "is_partition": True})
-
-    if is_iceberg:
-        for col in columns:
-            if col["column_name"] in iceberg_part_names:
-                col["is_partition"] = True
+        columns.append({"column_name": col_name, "data_type": (row[1] or "").strip()})
 
     return columns
 
@@ -172,16 +130,6 @@ def describe_columns(db_name, table_name):
 def resolve_type_id(impala_type):
     base = impala_type.lower().split("(")[0].strip()
     return IMPALA_TYPE_MAP.get(base)
-
-
-def _dist_idx(data_type):
-    """파티션 컬럼 타입 → distribution_idx (timestamp: 1, string: 2)"""
-    base = data_type.lower().split("(")[0].strip()
-    if base == "timestamp":
-        return 1
-    if base == "string":
-        return 2
-    return None
 
 
 # ── 동기화 실행 ────────────────────────────────────────────────────────
@@ -207,20 +155,13 @@ def sync_columns(table_id):
         print("  [오류] Impala에서 컬럼 정보를 가져올 수 없습니다.")
         sys.exit(1)
 
-    partition = [c for c in columns if c["is_partition"]]
-    print(f"  일반 컬럼 {len(columns) - len(partition)}개, 파티션 컬럼 {len(partition)}개")
+    print(f"  컬럼 {len(columns)}개")
 
     unmapped = [c for c in columns if resolve_type_id(c["data_type"]) is None]
     if unmapped:
         for c in unmapped:
             print(f"  [오류] type_map에 없는 타입: '{c['data_type']}' (column: {c['column_name']})")
         print("  IMPALA_TYPE_MAP을 업데이트하세요.")
-        sys.exit(1)
-
-    bad_part = [c for c in partition if _dist_idx(c["data_type"]) is None]
-    if bad_part:
-        for c in bad_part:
-            print(f"  [오류] 파티션 타입 미지원: '{c['data_type']}' (column: {c['column_name']})")
         sys.exit(1)
 
     with get_connection() as conn:
@@ -233,23 +174,13 @@ def sync_columns(table_id):
                 data_type = col["data_type"].replace("'", "''")
                 type_id   = resolve_type_id(col["data_type"])
 
-                if col["is_partition"]:
-                    dist_yn  = "'Y'"
-                    dist_idx = _dist_idx(col["data_type"])
-                else:
-                    dist_yn  = "NULL"
-                    dist_idx = "NULL"
-
                 cur.execute(
                     f"INSERT INTO d_table_column "
-                    f"(table_id, column_name, data_type, type_id, sort_idx, distribution_yn, distribution_idx) "
-                    f"VALUES ({table_id}, '{col_name}', '{data_type}', {type_id}, {sort_idx}, {dist_yn}, {dist_idx})"
+                    f"(table_id, column_name, data_type, type_id, sort_idx) "
+                    f"VALUES ({table_id}, '{col_name}', '{data_type}', {type_id}, {sort_idx})"
                 )
 
     print(f"  기존 컬럼 {deleted}개 삭제, 새 컬럼 {len(columns)}개 삽입 완료")
-    if partition:
-        for col in partition:
-            print(f"    파티션: {col['column_name']} ({col['data_type']}) → distribution_idx={_dist_idx(col['data_type'])}")
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────
