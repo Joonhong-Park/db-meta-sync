@@ -169,14 +169,14 @@ def sync_columns(table_id):
         sys.exit(1)
 
     new_map = {
-        col["column_name"]: {"data_type": col["data_type"], "sort_idx": idx}
+        col["column_name"]: {"type_id": resolve_type_id(col["data_type"]), "sort_idx": idx}
         for idx, col in enumerate(columns, start=1)
     }
 
     with get_connection() as conn:
         with get_cursor(conn) as cur:
             cur.execute(
-                f"SELECT column_name, data_type, type_id, sort_idx "
+                f"SELECT column_name, data_type_id, sort_idx "
                 f"FROM d_table_column WHERE table_id = {table_id}"
             )
             existing = {row["column_name"]: row for row in cur.fetchall()}
@@ -184,27 +184,23 @@ def sync_columns(table_id):
             inserted = updated = deleted = 0
 
             for col_name, new in new_map.items():
-                data_type = new["data_type"].replace("'", "''")
-                sort_idx  = new["sort_idx"]
-                type_id   = resolve_type_id(new["data_type"])
-                escaped   = col_name.replace("'", "''")
+                type_id  = new["type_id"]
+                sort_idx = new["sort_idx"]
+                escaped  = col_name.replace("'", "''")
 
                 if col_name not in existing:
                     cur.execute(
                         f"INSERT INTO d_table_column "
-                        f"(table_id, column_name, data_type, type_id, sort_idx, create_date_ts, update_date_ts) "
-                        f"VALUES ({table_id}, '{escaped}', '{data_type}', {type_id}, {sort_idx}, now(), now())"
+                        f"(table_id, column_name, data_type_id, sort_idx, create_date_ts, update_date_ts) "
+                        f"VALUES ({table_id}, '{escaped}', {type_id}, {sort_idx}, now(), now())"
                     )
                     inserted += 1
                 else:
                     ex = existing[col_name]
-                    if (ex["data_type"] != new["data_type"]
-                            or ex["type_id"] != type_id
-                            or ex["sort_idx"] != sort_idx):
+                    if ex["data_type_id"] != type_id or ex["sort_idx"] != sort_idx:
                         cur.execute(
                             f"UPDATE d_table_column "
-                            f"SET data_type = '{data_type}', type_id = {type_id}, "
-                            f"sort_idx = {sort_idx}, update_date_ts = now() "
+                            f"SET data_type_id = {type_id}, sort_idx = {sort_idx}, update_date_ts = now() "
                             f"WHERE table_id = {table_id} AND column_name = '{escaped}'"
                         )
                         updated += 1
