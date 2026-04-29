@@ -184,7 +184,23 @@ def sync_columns(table_id):
                     f"VALUES ({table_id}, '{col_name}', '{data_type}', {type_id}, {sort_idx})"
                 )
 
+            cur.execute(
+                f"SELECT partition_name FROM d_table_partition WHERE table_id = {table_id}"
+            )
+            partitions = [row["partition_name"] for row in cur.fetchall()]
+
+            for dist_idx, part_name in enumerate(partitions, start=1):
+                cur.execute(
+                    f"UPDATE d_table_column "
+                    f"SET distribution_yn = 'Y', distribution_idx = {dist_idx} "
+                    f"WHERE table_id = {table_id} "
+                    f"AND column_name = '{part_name.replace(chr(39), chr(39) * 2)}'"
+                )
+
     print(f"  기존 컬럼 {deleted}개 삭제, 새 컬럼 {len(columns)}개 삽입 완료")
+    if partitions:
+        for dist_idx, part_name in enumerate(partitions, start=1):
+            print(f"    파티션: {part_name} → distribution_idx={dist_idx}")
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────
