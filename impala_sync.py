@@ -186,13 +186,12 @@ def sync_columns(table_id):
             for col_name, new in new_map.items():
                 type_id  = new["type_id"]
                 sort_idx = new["sort_idx"]
-                escaped  = col_name.replace("'", "''")
 
                 if col_name not in existing:
                     cur.execute(
                         f"INSERT INTO d_table_column "
-                        f"(table_id, column_name, data_type_id, sort_idx, create_date_ts, update_date_ts) "
-                        f"VALUES ({table_id}, '{escaped}', {type_id}, {sort_idx}, now(), now())"
+                        f"(table_id, column_name, data_type_id, sort_idx, distribution_yn, distribution_idx, create_date_ts, update_date_ts) "
+                        f"VALUES ({table_id}, '{col_name}', {type_id}, {sort_idx}, 'N', NULL, now(), now())"
                     )
                     inserted += 1
                 else:
@@ -200,8 +199,9 @@ def sync_columns(table_id):
                     if ex["data_type_id"] != type_id or ex["sort_idx"] != sort_idx:
                         cur.execute(
                             f"UPDATE d_table_column "
-                            f"SET data_type_id = {type_id}, sort_idx = {sort_idx}, update_date_ts = now() "
-                            f"WHERE table_id = {table_id} AND column_name = '{escaped}'"
+                            f"SET data_type_id = {type_id}, sort_idx = {sort_idx}, "
+                            f"distribution_yn = 'N', distribution_idx = NULL, update_date_ts = now() "
+                            f"WHERE table_id = {table_id} AND column_name = '{col_name}'"
                         )
                         updated += 1
 
@@ -209,8 +209,7 @@ def sync_columns(table_id):
                 if col_name not in new_map:
                     cur.execute(
                         f"DELETE FROM d_table_column "
-                        f"WHERE table_id = {table_id} "
-                        f"AND column_name = '{col_name.replace(chr(39), chr(39) * 2)}'"
+                        f"WHERE table_id = {table_id} AND column_name = '{col_name}'"
                     )
                     deleted += 1
 
@@ -224,7 +223,7 @@ def sync_columns(table_id):
                     f"UPDATE d_table_column "
                     f"SET distribution_yn = 'Y', distribution_idx = {dist_idx} "
                     f"WHERE table_id = {table_id} "
-                    f"AND column_name = '{part_name.replace(chr(39), chr(39) * 2)}'"
+                    f"AND column_name = '{part_name}'"
                 )
 
     print(f"  추가 {inserted} / 수정 {updated} / 삭제 {deleted}")
