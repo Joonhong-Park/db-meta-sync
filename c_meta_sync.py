@@ -92,52 +92,51 @@ def execute_query(query, target=DB_C, fetch_result=False, commit=False):
 
 @dataclass
 class TypeMapping:
-    data_type_id: int
-    display_data_type: str
+    data_type_id:   int
+    data_type_name: str
 
 
 @dataclass
 class TableMapping:
     source_table: str
     target_table: str
-    column_map: dict
+    column_map:   dict
 
     def __post_init__(self):
         if "table_id" not in self.column_map:
             raise ValueError(f"column_map에 'table_id' 항목이 없습니다: {self.source_table}")
 
 
-C_TIMESTAMP_COLS = ("create_date_ts", "update_date_ts")
+C_TIMESTAMP_COLS = ("CREATE_DATE", "UPDATE_DATE")
 
 TYPE_ID_MAP = {
-    1: TypeMapping(data_type_id=101, display_data_type="varchar"),
-    2: TypeMapping(data_type_id=102, display_data_type="integer"),
-    3: TypeMapping(data_type_id=103, display_data_type="bigint"),
-    4: TypeMapping(data_type_id=104, display_data_type="boolean"),
-    5: TypeMapping(data_type_id=105, display_data_type="timestamp"),
+    1: TypeMapping(data_type_id=101, data_type_name="varchar"),
+    2: TypeMapping(data_type_id=102, data_type_name="integer"),
+    3: TypeMapping(data_type_id=103, data_type_name="bigint"),
+    4: TypeMapping(data_type_id=104, data_type_name="boolean"),
+    5: TypeMapping(data_type_id=105, data_type_name="timestamp"),
 }
 
 TABLE_MAPPINGS = {
     "table_meta": TableMapping(
         source_table="d_table_meta",
-        target_table="c_table_meta",
+        target_table="C_TABLE_META",
         column_map={
-            "table_id": "table_id",
-            "db":       "db_name",
-            "name":     "table_name",
+            "table_id": "TABLE_ID",
+            "db":       "DB_NAME",
+            "name":     "TABLE_NAME",
         },
     ),
     "table_column": TableMapping(
         source_table="d_table_column",
-        target_table="c_table_column",
+        target_table="C_TABLE_COLUMN",
         column_map={
-            "table_id":         "table_id",
-            "column_name":      "column_name",
-            "data_type":        "display_data_type",
-            "type_id":          "data_type_id",
-            "sort_idx":         "sort_idx",
-            "distribution_yn":  "distribution_yn",
-            "distribution_idx": "distribution_idx",
+            "table_id":         "TABLE_ID",
+            "column_name":      "COLUMN_NAME",
+            "data_type_id":     "DATA_TYPE_ID",
+            "sort_idx":         "SORT_IDX",
+            "distribution_yn":  "DISTRIBUTION_YN",
+            "distribution_idx": "DISTRIBUTION_IDX",
         },
     ),
 }
@@ -145,8 +144,8 @@ TABLE_MAPPINGS = {
 _META = TABLE_MAPPINGS["table_meta"]
 _COL  = TABLE_MAPPINGS["table_column"]
 
-_COL_VISIBLE    = ["column_name", "display_data_type", "distribution_yn", "distribution_idx"]
-_COL_UPDATEABLE = ["display_data_type", "data_type_id", "distribution_yn", "distribution_idx"]
+_COL_VISIBLE    = ["COLUMN_NAME", "DATA_TYPE_NAME", "SORT_IDX", "DISTRIBUTION_YN", "DISTRIBUTION_IDX"]
+_COL_UPDATEABLE = ["DATA_TYPE_NAME", "DATA_TYPE_ID", "SORT_IDX", "DISTRIBUTION_YN", "DISTRIBUTION_IDX"]
 
 
 # ── 동기화 유틸 ────────────────────────────────────────────────────────
@@ -179,10 +178,10 @@ def _resolve_type_id(row, d_type_id_raw):
     if d_type_id_raw not in TYPE_ID_MAP:
         raise ValueError(
             f"TYPE_ID_MAP에 없는 type_id: {d_type_id_raw} "
-            f"(column: {row.get('column_name')}) — TYPE_ID_MAP을 확인하세요."
+            f"(column: {row.get('COLUMN_NAME')}) — TYPE_ID_MAP을 확인하세요."
         )
     mapping = TYPE_ID_MAP[d_type_id_raw]
-    return {**row, "data_type_id": mapping.data_type_id, "display_data_type": mapping.display_data_type}
+    return {**row, "DATA_TYPE_ID": mapping.data_type_id, "DATA_TYPE_NAME": mapping.data_type_name}
 
 
 # ── 데이터 조회 ────────────────────────────────────────────────────────
@@ -199,7 +198,7 @@ def _fetch_d_meta(table_id):
 def _fetch_c_meta(table_id):
     cols   = ", ".join(_q(c) for c in _META.column_map.values())
     result = execute_query(
-        f'SELECT {cols} FROM {_q(_META.target_table)} WHERE {_q("table_id")} = {table_id}',
+        f'SELECT {cols} FROM {_q(_META.target_table)} WHERE {_q("TABLE_ID")} = {table_id}',
         fetch_result=True,
     )
     return result[0] if result else None
@@ -215,10 +214,10 @@ def _fetch_d_columns(table_id):
 
 
 def _fetch_c_columns(table_id):
-    cols = ", ".join(_q(c) for c in _COL.column_map.values())
+    cols = ", ".join(_q(c) for c in list(_COL.column_map.values()) + ["DATA_TYPE_NAME"])
     return execute_query(
         f'SELECT {cols} FROM {_q(_COL.target_table)} '
-        f'WHERE {_q("table_id")} = {table_id} ORDER BY {_q("sort_idx")}',
+        f'WHERE {_q("TABLE_ID")} = {table_id} ORDER BY {_q("SORT_IDX")}',
         fetch_result=True,
     )
 
@@ -234,7 +233,7 @@ def build_comparison(table_id):
     meta_diffs = []
     if d_meta:
         mapped_d = _map_row(d_meta, _META.column_map)
-        for c_col in [c for c in _META.column_map.values() if c != "table_id"]:
+        for c_col in [c for c in _META.column_map.values() if c != "TABLE_ID"]:
             d_val = mapped_d.get(c_col)
             c_val = c_meta.get(c_col) if c_meta else None
             if c_meta is None:
@@ -248,17 +247,16 @@ def build_comparison(table_id):
     mapped_d_cols = []
     for r in d_cols:
         mapped = _map_row(r, _COL.column_map)
-        mapped["_d_data_type_raw"] = r.get("data_type")
-        mapped_d_cols.append(_resolve_type_id(mapped, r.get("type_id")))
+        mapped_d_cols.append(_resolve_type_id(mapped, r.get("data_type_id")))
 
-    d_col_map = {(r["column_name"], r["sort_idx"]): r for r in mapped_d_cols}
-    c_col_map = {(r["column_name"], r["sort_idx"]): r for r in c_cols}
-    all_keys  = sorted(set(d_col_map) | set(c_col_map), key=lambda k: (k[1], k[0]))
+    d_col_map = {r["COLUMN_NAME"]: r for r in mapped_d_cols}
+    c_col_map = {r["COLUMN_NAME"]: r for r in c_cols}
+    all_keys  = sorted(set(d_col_map) | set(c_col_map))
 
     column_diffs = []
-    for col_name, sort_idx in all_keys:
-        d_row = d_col_map.get((col_name, sort_idx))
-        c_row = c_col_map.get((col_name, sort_idx))
+    for col_name in all_keys:
+        d_row = d_col_map.get(col_name)
+        c_row = c_col_map.get(col_name)
 
         if d_row and c_row:
             status = "변경" if any(d_row.get(v) != c_row.get(v) for v in _COL_VISIBLE) else "동일"
@@ -268,18 +266,18 @@ def build_comparison(table_id):
             status = "삭제 예정"
 
         column_diffs.append({
-            "sort_idx":            sort_idx,
-            "d_column_name":       d_row.get("column_name")       if d_row else None,
-            "d_data_type":         d_row.get("_d_data_type_raw")  if d_row else None,
-            "c_column_name":       c_row.get("column_name")       if c_row else None,
-            "c_display_data_type": c_row.get("display_data_type") if c_row else None,
-            "d_dist_yn":           d_row.get("distribution_yn")   if d_row else None,
-            "d_dist_idx":          d_row.get("distribution_idx")  if d_row else None,
-            "c_dist_yn":           c_row.get("distribution_yn")   if c_row else None,
-            "c_dist_idx":          c_row.get("distribution_idx")  if c_row else None,
-            "status":              status,
-            "d_row":               d_row,
-            "c_row":               c_row,
+            "sort_idx":         d_row.get("SORT_IDX")        if d_row else c_row.get("SORT_IDX"),
+            "d_column_name":    d_row.get("COLUMN_NAME")     if d_row else None,
+            "d_data_type_name": d_row.get("DATA_TYPE_NAME")  if d_row else None,
+            "c_column_name":    c_row.get("COLUMN_NAME")     if c_row else None,
+            "c_data_type_name": c_row.get("DATA_TYPE_NAME")  if c_row else None,
+            "d_dist_yn":        d_row.get("DISTRIBUTION_YN") if d_row else None,
+            "d_dist_idx":       d_row.get("DISTRIBUTION_IDX")if d_row else None,
+            "c_dist_yn":        c_row.get("DISTRIBUTION_YN") if c_row else None,
+            "c_dist_idx":       c_row.get("DISTRIBUTION_IDX")if c_row else None,
+            "status":           status,
+            "d_row":            d_row,
+            "c_row":            c_row,
         })
 
     has_changes = (
@@ -334,9 +332,9 @@ def print_comparison(cmp):
         print("  컬럼 정보가 없습니다.")
     else:
         _print_rows(
-            ["sort_idx", "D_column_name", "D_data_type", "C_column_name", "C_display_data_type", "상태"],
-            [[_str(d["sort_idx"]), _str(d["d_column_name"]), _str(d["d_data_type"]),
-              _str(d["c_column_name"]), _str(d["c_display_data_type"]), d["status"]]
+            ["sort_idx", "D_column_name", "D_data_type_name", "C_column_name", "C_data_type_name", "상태"],
+            [[_str(d["sort_idx"]), _str(d["d_column_name"]), _str(d["d_data_type_name"]),
+              _str(d["c_column_name"]), _str(d["c_data_type_name"]), d["status"]]
              for d in cmp["column_diffs"]],
         )
 
@@ -362,7 +360,7 @@ def _sync_meta(cur, table_id, cmp, now):
         return None
 
     mapped = _map_row(cmp["d_meta"], _META.column_map)
-    non_pk = [c for c in _META.column_map.values() if c != "table_id"]
+    non_pk = [c for c in _META.column_map.values() if c != "TABLE_ID"]
 
     if cmp["c_meta"] is None:
         c_cols     = list(_META.column_map.values()) + list(C_TIMESTAMP_COLS)
@@ -374,10 +372,10 @@ def _sync_meta(cur, table_id, cmp, now):
 
     if any(d["status"] == "변경" for d in cmp["meta_diffs"]):
         set_parts = [f'{_q(c)} = {_val(mapped[c])}' for c in non_pk]
-        set_parts.append(f'{_q("update_date_ts")} = {_val(now)}')
+        set_parts.append(f'{_q("UPDATE_DATE")} = {_val(now)}')
         cur.execute(
             f'UPDATE {_q(_META.target_table)} SET {", ".join(set_parts)} '
-            f'WHERE {_q("table_id")} = {table_id}'
+            f'WHERE {_q("TABLE_ID")} = {table_id}'
         )
         return "UPDATE"
 
@@ -393,30 +391,28 @@ def _sync_columns(cur, table_id, cmp, now):
         c_row  = diff["c_row"]
 
         if status == "추가 예정" and d_row:
-            c_cols     = list(_COL.column_map.values()) + list(C_TIMESTAMP_COLS)
+            c_cols     = list(_COL.column_map.values()) + ["DATA_TYPE_NAME"] + list(C_TIMESTAMP_COLS)
             cols_q     = ", ".join(_q(c) for c in c_cols)
-            vals       = [d_row[c] for c in _COL.column_map.values()] + [now, now]
+            vals       = [d_row[c] for c in _COL.column_map.values()] + [d_row["DATA_TYPE_NAME"], now, now]
             values_str = ", ".join(_val(v) for v in vals)
             cur.execute(f'INSERT INTO {_q(_COL.target_table)} ({cols_q}) VALUES ({values_str})')
             inserted += 1
 
         elif status == "변경" and d_row and c_row:
             set_parts = [f'{_q(c)} = {_val(d_row[c])}' for c in _COL_UPDATEABLE]
-            set_parts.append(f'{_q("update_date_ts")} = {_val(now)}')
+            set_parts.append(f'{_q("UPDATE_DATE")} = {_val(now)}')
             cur.execute(
                 f'UPDATE {_q(_COL.target_table)} SET {", ".join(set_parts)} '
-                f'WHERE {_q("table_id")} = {table_id} '
-                f'AND {_q("column_name")} = {_val(c_row["column_name"])} '
-                f'AND {_q("sort_idx")} = {c_row["sort_idx"]}'
+                f'WHERE {_q("TABLE_ID")} = {table_id} '
+                f'AND {_q("COLUMN_NAME")} = {_val(c_row["COLUMN_NAME"])}'
             )
             updated += 1
 
         elif status == "삭제 예정" and c_row:
             cur.execute(
                 f'DELETE FROM {_q(_COL.target_table)} '
-                f'WHERE {_q("table_id")} = {table_id} '
-                f'AND {_q("column_name")} = {_val(c_row["column_name"])} '
-                f'AND {_q("sort_idx")} = {c_row["sort_idx"]}'
+                f'WHERE {_q("TABLE_ID")} = {table_id} '
+                f'AND {_q("COLUMN_NAME")} = {_val(c_row["COLUMN_NAME"])}'
             )
             deleted += 1
 
@@ -470,7 +466,7 @@ def handle_select():
         return
 
     rows = execute_query(
-        f'SELECT * FROM "c_table_meta" WHERE "table_id" = {table_id}',
+        f'SELECT * FROM {_q("C_TABLE_META")} WHERE {_q("TABLE_ID")} = {table_id}',
         fetch_result=True,
     )
     if not rows:
@@ -481,7 +477,7 @@ def handle_select():
     print_table(rows)
 
     columns = execute_query(
-        f'SELECT * FROM "c_table_column" WHERE "table_id" = {table_id} ORDER BY "sort_idx"',
+        f'SELECT * FROM {_q("C_TABLE_COLUMN")} WHERE {_q("TABLE_ID")} = {table_id} ORDER BY {_q("SORT_IDX")}',
         fetch_result=True,
     )
     print("\n[컬럼 정보]")
@@ -520,7 +516,8 @@ def handle_delete():
         return
 
     rows = execute_query(
-        f'SELECT "table_id", "db_name", "table_name" FROM "c_table_meta" WHERE "table_id" = {table_id}',
+        f'SELECT {_q("TABLE_ID")}, {_q("DB_NAME")}, {_q("TABLE_NAME")} '
+        f'FROM {_q("C_TABLE_META")} WHERE {_q("TABLE_ID")} = {table_id}',
         fetch_result=True,
     )
     if not rows:
@@ -528,7 +525,7 @@ def handle_delete():
         return
 
     meta     = rows[0]
-    db_table = f"{meta['db_name']}.{meta['table_name']}"
+    db_table = f"{meta['DB_NAME']}.{meta['TABLE_NAME']}"
     answer   = input(
         f"\n  table_id: {table_id} / {db_table}\n"
         f"  정말 삭제하시겠습니까? (yes/no): "
@@ -538,8 +535,8 @@ def handle_delete():
         print("  취소되었습니다.")
         return
 
-    execute_query(f'DELETE FROM "c_table_column" WHERE "table_id" = {table_id}', commit=True)
-    execute_query(f'DELETE FROM "c_table_meta" WHERE "table_id" = {table_id}', commit=True)
+    execute_query(f'DELETE FROM {_q("C_TABLE_COLUMN")} WHERE {_q("TABLE_ID")} = {table_id}', commit=True)
+    execute_query(f'DELETE FROM {_q("C_TABLE_META")} WHERE {_q("TABLE_ID")} = {table_id}', commit=True)
     print(f"  삭제 완료: {db_table} (table_id: {table_id})")
 
 
