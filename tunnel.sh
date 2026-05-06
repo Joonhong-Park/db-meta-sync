@@ -32,7 +32,7 @@ RECONNECT_DELAY_MAX=60   # 최대 재연결 대기(초)
 mkdir -p "${BASE_DIR}/.tunnel"
 
 is_running() {
-    if [ ! -f "${PID_FILE}" ]; then
+    if [ ! -s "${PID_FILE}" ]; then
         return 1
     fi
     local pid
@@ -40,7 +40,7 @@ is_running() {
     if kill -0 "${pid}" 2>/dev/null; then
         return 0
     else
-        rm -f "${PID_FILE}"
+        > "${PID_FILE}"
         return 1
     fi
 }
@@ -107,7 +107,7 @@ stop() {
         waited=$(( waited + 1 ))
     done
 
-    rm -f "${PID_FILE}"
+    > "${PID_FILE}"
     echo "터널 중지됨 (PID: ${pid})"
 }
 
