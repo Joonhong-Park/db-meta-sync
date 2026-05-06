@@ -5,7 +5,7 @@ DB 연결 없이 실행되는 쿼리를 출력해 로직을 검증한다.
 실행: python3 test_sync.py
 """
 from unittest.mock import patch
-from c_meta_sync import build_comparison, _sync_meta, _sync_columns
+from c_meta_sync import build_comparison, _sync_meta, _sync_columns, _d_col_to_c
 
 
 # ── 공통 픽스처 ────────────────────────────────────────────────────────
@@ -57,10 +57,9 @@ def run_case(label, d_meta, c_meta, d_cols, c_cols):
         cmp = build_comparison(1)
 
     cur = MockCursor()
-    now = "2026-05-06 00:00:00"
 
-    meta_op = _sync_meta(cur, 1, cmp, now)
-    inserted, updated, deleted = _sync_columns(cur, 1, cmp, now)
+    meta_op = _sync_meta(cur, 1, cmp)
+    inserted, updated, deleted = _sync_columns(cur, 1, cmp)
 
     print(f"  메타: {meta_op}")
     print(f"  컬럼: 추가 {inserted} / 수정 {updated} / 삭제 {deleted}")

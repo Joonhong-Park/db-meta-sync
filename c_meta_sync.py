@@ -6,7 +6,6 @@ D ↔ C DB 메타·컬럼 동기화 도구
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
 
 import psycopg2
 import psycopg2.extras
@@ -121,32 +120,6 @@ TYPE_ID_MAP: dict[str, TypeMapping] = {
 _COL_VISIBLE = ["COLUMN_NAME", "DATA_TYPE_NAME", "SORT_IDX", "DISTRIBUTION_YN", "DISTRIBUTION_IDX"]
 
 
-# ── 동기화 유틸 ────────────────────────────────────────────────────────
-
-def _now():
-    """현재 시각 문자열 — CREATE_DATE/UPDATE_DATE에 사용"""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _q(identifier):
-    """C DB 식별자(테이블명·컬럼명)를 쌍따옴표로 감쌈 — C DB는 대문자 식별자 필수"""
-    return f'"{identifier}"'
-
-
-def _val(v):
-    """
-    Python 값 → SQL 리터럴 문자열 변환.
-    None → NULL, bool → TRUE/FALSE, 숫자 → 그대로, 문자열 → 작은따옴표로 감쌈
-    """
-    if v is None:
-        return "NULL"
-    if isinstance(v, bool):
-        return "TRUE" if v else "FALSE"
-    if isinstance(v, (int, float)):
-        return str(v)
-    return "'" + str(v).replace("'", "''") + "'"
-
-
 # ── 데이터 조회 ────────────────────────────────────────────────────────
 
 def _fetch_d_meta(table_id):
@@ -161,8 +134,7 @@ def _fetch_d_meta(table_id):
 def _fetch_c_meta(table_id):
     """C DB에서 테이블 메타 1건 조회. 없으면 None."""
     result = execute_query(
-        f'SELECT "TABLE_ID", "DB_NAME", "TABLE_NAME" '
-        f'FROM "C_TABLE_META" WHERE "TABLE_ID" = {table_id}',
+        f'SELECT "TABLE_ID", "DB_NAME", "TABLE_NAME" FROM "C_TABLE_META" WHERE "TABLE_ID" = {table_id}',
         fetch_result=True,
     )
     return result[0] if result else None
@@ -361,15 +333,16 @@ def print_comparison(cmp):
 
 # ── 동기화 실행 ────────────────────────────────────────────────────────
 
-def _sync_meta(cur, table_id, cmp, now):
+def _sync_meta(cur, table_id, cmp):
     """
     테이블 메타 동기화 (C_TABLE_META).
+    타임스탬프는 PostgreSQL now() 사용.
 
     케이스별 동작:
     - D없음 + C없음 : skip (None 반환)
     - D없음 + C있음 : C에서 DELETE
-    - D있음 + C없음 : C에 INSERT (CREATE_DATE = UPDATE_DATE = now)
-    - D있음 + C있음 : 변경 있으면 UPDATE (UPDATE_DATE = now), 없으면 skip
+    - D있음 + C없음 : C에 INSERT (CREATE_DATE = UPDATE_DATE = now())
+    - D있음 + C있음 : 변경 있으면 UPDATE (UPDATE_DATE = now()), 없으면 skip
 
     반환: "INSERT" | "UPDATE" | "DELETE" | None
     """
@@ -387,28 +360,27 @@ def _sync_meta(cur, table_id, cmp, now):
     if not c:
         # C에 아직 없는 테이블 → 신규 등록
         cur.execute(
-            f'INSERT INTO "C_TABLE_META" '
-            f'("TABLE_ID", "DB_NAME", "TABLE_NAME", "CREATE_DATE", "UPDATE_DATE") '
-            f'VALUES ({_val(d["table_id"])}, {_val(d["db"])}, {_val(d["name"])}, {_val(now)}, {_val(now)})'
+            f"INSERT INTO \"C_TABLE_META\" (\"TABLE_ID\", \"DB_NAME\", \"TABLE_NAME\", \"CREATE_DATE\", \"UPDATE_DATE\") "
+            f"VALUES ({d['table_id']}, '{d['db']}', '{d['name']}', now(), now())"
         )
         return "INSERT"
 
     if any(diff["status"] == "변경" for diff in cmp["meta_diffs"]):
         # DB_NAME 또는 TABLE_NAME이 D 기준으로 변경됨
         cur.execute(
-            f'UPDATE "C_TABLE_META" '
-            f'SET "DB_NAME" = {_val(d["db"])}, "TABLE_NAME" = {_val(d["name"])}, '
-            f'"UPDATE_DATE" = {_val(now)} '
-            f'WHERE "TABLE_ID" = {table_id}'
+            f"UPDATE \"C_TABLE_META\" "
+            f"SET \"DB_NAME\" = '{d['db']}', \"TABLE_NAME\" = '{d['name']}', \"UPDATE_DATE\" = now() "
+            f"WHERE \"TABLE_ID\" = {table_id}"
         )
         return "UPDATE"
 
     return None
 
 
-def _sync_columns(cur, table_id, cmp, now):
+def _sync_columns(cur, table_id, cmp):
     """
     컬럼 목록 증분 동기화 (C_TABLE_COLUMN).
+    타임스탬프는 PostgreSQL now() 사용.
 
     매칭 기준 : COLUMN_NAME
       → 같은 이름의 컬럼을 D/C 양쪽에서 찾아 비교
@@ -431,40 +403,39 @@ def _sync_columns(cur, table_id, cmp, now):
 
         if status == "추가 예정" and d:
             # D에만 존재하는 컬럼 → C에 신규 삽입
+            # nullable: DISTRIBUTION_YN(문자열), DISTRIBUTION_IDX(정수)
+            dist_yn  = f"'{d['DISTRIBUTION_YN']}'" if d['DISTRIBUTION_YN']  is not None else 'NULL'
+            dist_idx = str(d['DISTRIBUTION_IDX'])   if d['DISTRIBUTION_IDX'] is not None else 'NULL'
             cur.execute(
-                f'INSERT INTO "C_TABLE_COLUMN" '
-                f'("TABLE_ID", "COLUMN_NAME", "DATA_TYPE_ID", "DATA_TYPE_NAME", "SORT_IDX", '
-                f'"DISTRIBUTION_YN", "DISTRIBUTION_IDX", "CREATE_DATE", "UPDATE_DATE") '
-                f'VALUES ({_val(d["TABLE_ID"])}, {_val(d["COLUMN_NAME"])}, {_val(d["DATA_TYPE_ID"])}, '
-                f'{_val(d["DATA_TYPE_NAME"])}, {_val(d["SORT_IDX"])}, {_val(d["DISTRIBUTION_YN"])}, '
-                f'{_val(d["DISTRIBUTION_IDX"])}, {_val(now)}, {_val(now)})'
+                f"INSERT INTO \"C_TABLE_COLUMN\" "
+                f"(\"TABLE_ID\", \"COLUMN_NAME\", \"DATA_TYPE_ID\", \"DATA_TYPE_NAME\", \"SORT_IDX\", "
+                f"\"DISTRIBUTION_YN\", \"DISTRIBUTION_IDX\", \"CREATE_DATE\", \"UPDATE_DATE\") "
+                f"VALUES ({d['TABLE_ID']}, '{d['COLUMN_NAME']}', {d['DATA_TYPE_ID']}, '{d['DATA_TYPE_NAME']}', "
+                f"{d['SORT_IDX']}, {dist_yn}, {dist_idx}, now(), now())"
             )
             inserted += 1
 
         elif status == "변경" and d and c:
             # D/C 모두 존재하나 값이 다름 → C를 D 기준으로 갱신
             # WHERE: C의 기존 COLUMN_NAME + SORT_IDX로 행 식별 (sort_idx 변경 케이스 대응)
+            dist_yn  = f"'{d['DISTRIBUTION_YN']}'" if d['DISTRIBUTION_YN']  is not None else 'NULL'
+            dist_idx = str(d['DISTRIBUTION_IDX'])   if d['DISTRIBUTION_IDX'] is not None else 'NULL'
             cur.execute(
-                f'UPDATE "C_TABLE_COLUMN" '
-                f'SET "DATA_TYPE_NAME" = {_val(d["DATA_TYPE_NAME"])}, '
-                f'"DATA_TYPE_ID" = {_val(d["DATA_TYPE_ID"])}, '
-                f'"SORT_IDX" = {_val(d["SORT_IDX"])}, '
-                f'"DISTRIBUTION_YN" = {_val(d["DISTRIBUTION_YN"])}, '
-                f'"DISTRIBUTION_IDX" = {_val(d["DISTRIBUTION_IDX"])}, '
-                f'"UPDATE_DATE" = {_val(now)} '
-                f'WHERE "TABLE_ID" = {table_id} '
-                f'AND "COLUMN_NAME" = {_val(c["COLUMN_NAME"])} '
-                f'AND "SORT_IDX" = {c["SORT_IDX"]}'
+                f"UPDATE \"C_TABLE_COLUMN\" "
+                f"SET \"DATA_TYPE_NAME\" = '{d['DATA_TYPE_NAME']}', \"DATA_TYPE_ID\" = {d['DATA_TYPE_ID']}, "
+                f"\"SORT_IDX\" = {d['SORT_IDX']}, \"DISTRIBUTION_YN\" = {dist_yn}, \"DISTRIBUTION_IDX\" = {dist_idx}, "
+                f"\"UPDATE_DATE\" = now() "
+                f"WHERE \"TABLE_ID\" = {table_id} "
+                f"AND \"COLUMN_NAME\" = '{c['COLUMN_NAME']}' AND \"SORT_IDX\" = {c['SORT_IDX']}"
             )
             updated += 1
 
         elif status == "삭제 예정" and c:
             # C에만 존재 (D에서 제거됨) → C에서 삭제
             cur.execute(
-                f'DELETE FROM "C_TABLE_COLUMN" '
-                f'WHERE "TABLE_ID" = {table_id} '
-                f'AND "COLUMN_NAME" = {_val(c["COLUMN_NAME"])} '
-                f'AND "SORT_IDX" = {c["SORT_IDX"]}'
+                f"DELETE FROM \"C_TABLE_COLUMN\" "
+                f"WHERE \"TABLE_ID\" = {table_id} "
+                f"AND \"COLUMN_NAME\" = '{c['COLUMN_NAME']}' AND \"SORT_IDX\" = {c['SORT_IDX']}"
             )
             deleted += 1
 
@@ -476,11 +447,10 @@ def apply_sync(table_id, cmp):
     메타 + 컬럼을 단일 트랜잭션으로 동기화.
     _sync_meta 실행 후 _sync_columns 실행. 어느 쪽이든 실패 시 전체 rollback.
     """
-    now = _now()
     with get_connection(DB_C) as conn:
         with get_cursor(conn) as cur:
-            meta_op = _sync_meta(cur, table_id, cmp, now)
-            inserted, updated, deleted = _sync_columns(cur, table_id, cmp, now)
+            meta_op = _sync_meta(cur, table_id, cmp)
+            inserted, updated, deleted = _sync_columns(cur, table_id, cmp)
     print("\n동기화 완료")
     if meta_op:
         print(f"  메타: {meta_op}")
