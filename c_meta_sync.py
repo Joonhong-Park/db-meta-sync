@@ -356,13 +356,23 @@ def print_comparison(cmp):
 # ── 동기화 실행 ────────────────────────────────────────────────────────
 
 def _sync_meta(cur, table_id, cmp, now):
-    if not cmp["d_meta"]:
+    d_meta = cmp["d_meta"]
+    c_meta = cmp["c_meta"]
+
+    if not d_meta and not c_meta:
         return None
 
-    mapped = _map_row(cmp["d_meta"], _META.column_map)
+    if not d_meta and c_meta:
+        cur.execute(
+            f'DELETE FROM {_q(_META.target_table)} '
+            f'WHERE {_q("TABLE_ID")} = {table_id}'
+        )
+        return "DELETE"
+
+    mapped = _map_row(d_meta, _META.column_map)
     non_pk = [c for c in _META.column_map.values() if c != "TABLE_ID"]
 
-    if cmp["c_meta"] is None:
+    if not c_meta:
         c_cols     = list(_META.column_map.values()) + list(C_TIMESTAMP_COLS)
         cols_q     = ", ".join(_q(c) for c in c_cols)
         vals       = [mapped[c] for c in _META.column_map.values()] + [now, now]
@@ -383,14 +393,25 @@ def _sync_meta(cur, table_id, cmp, now):
 
 
 def _sync_columns(cur, table_id, cmp, now):
+    """
+    D 컬럼 목록을 기준으로 C 컬럼을 증분 동기화한다.
+
+    매칭 기준: COLUMN_NAME (삭제 후 재삽입 방식 아님)
+    동일 판단: _COL_VISIBLE 항목(COLUMN_NAME, DATA_TYPE_NAME, SORT_IDX,
+               DISTRIBUTION_YN, DISTRIBUTION_IDX) 모두 일치해야 "동일"
+    행 식별:   UPDATE/DELETE의 WHERE는 TABLE_ID + COLUMN_NAME + SORT_IDX
+               → C의 기존 값(c_row)으로 행을 찾아 D의 새 값(d_row)으로 갱신
+    """
     inserted = updated = deleted = 0
 
     for diff in cmp["column_diffs"]:
         status = diff["status"]
-        d_row  = diff["d_row"]
-        c_row  = diff["c_row"]
+        d_row  = diff["d_row"]  # D에서 가져온 행 (C 컬럼명 공간으로 변환된 상태)
+        c_row  = diff["c_row"]  # C에서 가져온 현재 행
 
         if status == "추가 예정" and d_row:
+            # D에만 존재 → C에 INSERT
+            # column_map 컬럼 + DATA_TYPE_NAME(TYPE_ID_MAP 변환값) + 타임스탬프
             c_cols     = list(_COL.column_map.values()) + ["DATA_TYPE_NAME"] + list(C_TIMESTAMP_COLS)
             cols_q     = ", ".join(_q(c) for c in c_cols)
             vals       = [d_row[c] for c in _COL.column_map.values()] + [d_row["DATA_TYPE_NAME"], now, now]
@@ -399,20 +420,27 @@ def _sync_columns(cur, table_id, cmp, now):
             inserted += 1
 
         elif status == "변경" and d_row and c_row:
+            # D/C 모두 존재하나 값이 다름 → C를 D 기준으로 UPDATE
+            # WHERE: C의 기존 COLUMN_NAME + SORT_IDX로 행 식별
+            # SET:   _COL_UPDATEABLE 컬럼을 D 값으로 갱신, UPDATE_DATE 현재시각
             set_parts = [f'{_q(c)} = {_val(d_row[c])}' for c in _COL_UPDATEABLE]
             set_parts.append(f'{_q("UPDATE_DATE")} = {_val(now)}')
             cur.execute(
                 f'UPDATE {_q(_COL.target_table)} SET {", ".join(set_parts)} '
                 f'WHERE {_q("TABLE_ID")} = {table_id} '
-                f'AND {_q("COLUMN_NAME")} = {_val(c_row["COLUMN_NAME"])}'
+                f'AND {_q("COLUMN_NAME")} = {_val(c_row["COLUMN_NAME"])} '
+                f'AND {_q("SORT_IDX")} = {c_row["SORT_IDX"]}'
             )
             updated += 1
 
         elif status == "삭제 예정" and c_row:
+            # C에만 존재 (D에서 제거됨) → C에서 DELETE
+            # WHERE: COLUMN_NAME + SORT_IDX로 정확한 행 지정
             cur.execute(
                 f'DELETE FROM {_q(_COL.target_table)} '
                 f'WHERE {_q("TABLE_ID")} = {table_id} '
-                f'AND {_q("COLUMN_NAME")} = {_val(c_row["COLUMN_NAME"])}'
+                f'AND {_q("COLUMN_NAME")} = {_val(c_row["COLUMN_NAME"])} '
+                f'AND {_q("SORT_IDX")} = {c_row["SORT_IDX"]}'
             )
             deleted += 1
 
