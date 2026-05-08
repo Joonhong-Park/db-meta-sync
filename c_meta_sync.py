@@ -116,10 +116,6 @@ TYPE_ID_MAP: dict[str, TypeMapping] = {
     "timestamp": TypeMapping(data_type_id=105, data_type_name="timestamp"),
 }
 
-# 컬럼 비교 시 변경 여부 판단 대상 (DATA_TYPE_ID는 DATA_TYPE_NAME에서 파생되므로 미포함)
-_COL_VISIBLE = ["COLUMN_NAME", "DATA_TYPE_NAME", "SORT_IDX", "DISTRIBUTION_YN", "DISTRIBUTION_IDX"]
-
-
 # ── 데이터 조회 ────────────────────────────────────────────────────────
 
 def _fetch_d_meta(table_id):
@@ -149,24 +145,11 @@ def _fetch_d_columns(table_id):
     )
 
 
-def _fetch_c_columns(table_id):
-    """C DB에서 컬럼 목록 조회. DATA_TYPE_ID와 DATA_TYPE_NAME 둘 다 가져옴."""
-    return execute_query(
-        f'SELECT "TABLE_ID", "COLUMN_NAME", "DATA_TYPE_ID", "DATA_TYPE_NAME", "SORT_IDX", '
-        f'"DISTRIBUTION_YN", "DISTRIBUTION_IDX" '
-        f'FROM "C_TABLE_COLUMN" WHERE "TABLE_ID" = {table_id} ORDER BY "SORT_IDX"',
-        fetch_result=True,
-    )
-
-
-# ── 비교 데이터 생성 ────────────────────────────────────────────────────
-
 def _d_col_to_c(d_row):
     """
     D 컬럼 행 1개를 C 컬럼명 공간으로 변환.
-    - D의 소문자 컬럼명 → C의 대문자 컬럼명
-    - data_type_name → TYPE_ID_MAP 조회로 DATA_TYPE_ID 파생
-    - 매핑에 없는 data_type_name이면 즉시 ValueError (동기화 전 조기 차단)
+    data_type_name → TYPE_ID_MAP 조회로 DATA_TYPE_ID 파생.
+    매핑에 없는 data_type_name이면 즉시 ValueError.
     """
     type_name = d_row.get("data_type_name")
     if type_name and type_name not in TYPE_ID_MAP:
@@ -185,191 +168,38 @@ def _d_col_to_c(d_row):
     }
 
 
-def build_comparison(table_id):
-    """
-    D/C 양쪽 데이터를 조회해 비교 결과 구조체를 반환.
-
-    반환 구조:
-    {
-        "table_id":     int,
-        "d_meta":       dict | None,   # D에서 조회한 원본 행
-        "c_meta":       dict | None,   # C에서 조회한 원본 행
-        "meta_diffs":   list[dict],    # 필드별 D값/C값/상태
-        "column_diffs": list[dict],    # 컬럼별 D행/C행/상태
-        "has_changes":  bool,          # 메뉴에서 동기화 진행 여부 판단용
-    }
-
-    meta_diffs 상태값: "동일" | "변경" | "C없음"
-    column_diffs 상태값: "동일" | "변경" | "추가 예정" | "삭제 예정"
-    """
-    d_meta = _fetch_d_meta(table_id)
-    c_meta = _fetch_c_meta(table_id)
-    d_cols = _fetch_d_columns(table_id)
-    c_cols = _fetch_c_columns(table_id)
-
-    # ── 메타 비교 ──
-    # D에 행이 있을 때만 필드별 비교 수행 (D없음 케이스는 _sync_meta에서 처리)
-    meta_diffs = []
-    if d_meta:
-        for d_key, c_key in [("db", "DB_NAME"), ("name", "TABLE_NAME")]:
-            d_val  = d_meta.get(d_key)
-            c_val  = c_meta.get(c_key) if c_meta else None
-            status = "C없음" if not c_meta else ("동일" if d_val == c_val else "변경")
-            meta_diffs.append({"field": c_key, "d_val": d_val, "c_val": c_val, "status": status})
-
-    # ── 컬럼 비교 ──
-    # D 컬럼을 C 컬럼명 공간으로 변환 후 COLUMN_NAME 기준으로 매칭
-    mapped_d_cols = [_d_col_to_c(r) for r in d_cols]
-    d_col_map = {r["COLUMN_NAME"]: r for r in mapped_d_cols}
-    c_col_map = {r["COLUMN_NAME"]: r for r in c_cols}
-    all_keys  = sorted(set(d_col_map) | set(c_col_map))
-
-    column_diffs = []
-    for col_name in all_keys:
-        d_row = d_col_map.get(col_name)
-        c_row = c_col_map.get(col_name)
-
-        if d_row and c_row:
-            # 양쪽 존재: _COL_VISIBLE 항목 중 하나라도 다르면 "변경"
-            status = "변경" if any(d_row.get(v) != c_row.get(v) for v in _COL_VISIBLE) else "동일"
-        elif d_row:
-            status = "추가 예정"   # D에만 존재 → C에 INSERT 필요
-        else:
-            status = "삭제 예정"   # C에만 존재 → C에서 DELETE 필요
-
-        column_diffs.append({
-            "sort_idx":         d_row.get("SORT_IDX")         if d_row else c_row.get("SORT_IDX"),
-            "d_column_name":    d_row.get("COLUMN_NAME")      if d_row else None,
-            "d_data_type_name": d_row.get("DATA_TYPE_NAME")   if d_row else None,
-            "c_column_name":    c_row.get("COLUMN_NAME")      if c_row else None,
-            "c_data_type_name": c_row.get("DATA_TYPE_NAME")   if c_row else None,
-            "d_dist_yn":        d_row.get("DISTRIBUTION_YN")  if d_row else None,
-            "d_dist_idx":       d_row.get("DISTRIBUTION_IDX") if d_row else None,
-            "c_dist_yn":        c_row.get("DISTRIBUTION_YN")  if c_row else None,
-            "c_dist_idx":       c_row.get("DISTRIBUTION_IDX") if c_row else None,
-            "status":           status,
-            "d_row":            d_row,   # _sync_columns에서 INSERT/UPDATE 값으로 사용
-            "c_row":            c_row,   # _sync_columns에서 WHERE 조건 식별에 사용
-        })
-
-    has_changes = (
-        any(d["status"] != "동일" for d in meta_diffs) or
-        any(d["status"] != "동일" for d in column_diffs)
-    )
-
-    return {
-        "table_id":      table_id,
-        "d_meta":        d_meta,
-        "c_meta":        c_meta,
-        "meta_diffs":    meta_diffs,
-        "mapped_d_cols": mapped_d_cols,  # _sync_columns에서 재삽입 대상으로 사용
-        "column_diffs":  column_diffs,
-        "has_changes":   has_changes,
-    }
-
-
-# ── 비교 화면 출력 ──────────────────────────────────────────────────────
-
-def _print_rows(headers, rows):
-    """헤더 + 데이터 행을 ASCII 표로 출력"""
-    if not rows:
-        print("  (없음)")
-        return
-    widths = [max(len(h), max(len(str(r[i])) for r in rows)) for i, h in enumerate(headers)]
-    sep = "+-" + "-+-".join("-" * w for w in widths) + "-+"
-    print(sep)
-    print("| " + " | ".join(h.ljust(widths[i]) for i, h in enumerate(headers)) + " |")
-    print(sep)
-    for row in rows:
-        print("| " + " | ".join(str(v).ljust(widths[i]) for i, v in enumerate(row)) + " |")
-    print(sep)
-
-
-def _str(val):
-    return str(val) if val is not None else "(없음)"
-
-
-def print_comparison(cmp):
-    """
-    build_comparison 결과를 터미널 표로 출력.
-    메타 비교 → 컬럼 비교 → distribution 정보(값 있는 행만) 순서.
-    """
-    print(f"\n[table_id {cmp['table_id']} 비교]")
-
-    print("\n[메타 비교]")
-    if not cmp["meta_diffs"]:
-        print("  D에 해당 table_id가 없습니다.")
-    else:
-        _print_rows(
-            ["항목", "D값", "C값"],
-            [[d["field"], _str(d["d_val"]), _str(d["c_val"])] for d in cmp["meta_diffs"]],
-        )
-
-    print("\n[컬럼 비교]")
-    if not cmp["column_diffs"]:
-        print("  컬럼 정보가 없습니다.")
-    else:
-        _print_rows(
-            ["sort_idx", "D_column_name", "D_data_type_name", "C_column_name", "C_data_type_name"],
-            [[_str(d["sort_idx"]), _str(d["d_column_name"]), _str(d["d_data_type_name"]),
-              _str(d["c_column_name"]), _str(d["c_data_type_name"])]
-             for d in cmp["column_diffs"]],
-        )
-
-    # distribution 값이 있는 컬럼만 별도 섹션으로 표시
-    dist_rows = [d for d in cmp["column_diffs"]
-                 if any((d["d_dist_yn"], d["d_dist_idx"], d["c_dist_yn"], d["c_dist_idx"]))]
-    if dist_rows:
-        print("\n[distribution 정보]")
-        _print_rows(
-            ["sort_idx", "distribution_yn", "distribution_idx"],
-            [[
-                _str(d["sort_idx"]),
-                _str(d["d_dist_yn"]  if d["d_dist_yn"]  is not None else d["c_dist_yn"]),
-                _str(d["d_dist_idx"] if d["d_dist_idx"] is not None else d["c_dist_idx"]),
-            ] for d in dist_rows],
-        )
-
-
 # ── 동기화 실행 ────────────────────────────────────────────────────────
 
-def _sync_meta(cur, table_id, cmp):
+def _sync_meta(cur, table_id, d_meta, c_meta):
     """
     테이블 메타 동기화 (C_TABLE_META).
-    타임스탬프는 PostgreSQL now() 사용.
 
     케이스별 동작:
     - D없음 + C없음 : skip (None 반환)
-    - D없음 + C있음 : C에서 DELETE
-    - D있음 + C없음 : C에 INSERT (CREATE_DATE = UPDATE_DATE = now())
-    - D있음 + C있음 : 변경 있으면 UPDATE (UPDATE_DATE = now()), 없으면 skip
+    - D없음 + C있음 : DELETE
+    - D있음 + C없음 : INSERT (CREATE_DATE = UPDATE_DATE = now())
+    - D있음 + C있음 : D 기준으로 UPDATE (UPDATE_DATE = now())
 
     반환: "INSERT" | "UPDATE" | "DELETE" | None
     """
-    d = cmp["d_meta"]
-    c = cmp["c_meta"]
-
-    if not d and not c:
+    if not d_meta and not c_meta:
         return None
 
-    if not d and c:
-        # D에서 테이블이 삭제된 경우 C에서도 제거
+    if not d_meta:
         cur.execute(f'DELETE FROM "C_TABLE_META" WHERE "TABLE_ID" = {table_id}')
         return "DELETE"
 
-    if not c:
-        # C에 아직 없는 테이블 → 신규 등록
+    if not c_meta:
         cur.execute(
             f"INSERT INTO \"C_TABLE_META\" (\"TABLE_ID\", \"DB_NAME\", \"TABLE_NAME\", \"CREATE_DATE\", \"UPDATE_DATE\") "
-            f"VALUES ({d['table_id']}, '{d['db']}', '{d['name']}', now(), now())"
+            f"VALUES ({d_meta['table_id']}, '{d_meta['db']}', '{d_meta['name']}', now(), now())"
         )
         return "INSERT"
 
-    if any(diff["status"] == "변경" for diff in cmp["meta_diffs"]):
-        # DB_NAME 또는 TABLE_NAME이 D 기준으로 변경됨
+    if d_meta["db"] != c_meta["DB_NAME"] or d_meta["name"] != c_meta["TABLE_NAME"]:
         cur.execute(
             f"UPDATE \"C_TABLE_META\" "
-            f"SET \"DB_NAME\" = '{d['db']}', \"TABLE_NAME\" = '{d['name']}', \"UPDATE_DATE\" = now() "
+            f"SET \"DB_NAME\" = '{d_meta['db']}', \"TABLE_NAME\" = '{d_meta['name']}', \"UPDATE_DATE\" = now() "
             f"WHERE \"TABLE_ID\" = {table_id}"
         )
         return "UPDATE"
@@ -377,9 +207,9 @@ def _sync_meta(cur, table_id, cmp):
     return None
 
 
-def _sync_columns(cur, table_id, cmp):
+def _sync_columns(cur, table_id, mapped_d_cols):
     """
-    컬럼 전체 재삽입 동기화 (C_TABLE_COLUMN).
+    컬럼 전체 재삽입 (C_TABLE_COLUMN).
     기존 컬럼 전부 DELETE 후 D 컬럼 전부 INSERT.
     CREATE_DATE / UPDATE_DATE 모두 now().
 
@@ -387,7 +217,7 @@ def _sync_columns(cur, table_id, cmp):
     """
     cur.execute(f'DELETE FROM "C_TABLE_COLUMN" WHERE "TABLE_ID" = {table_id}')
 
-    for d in cmp["mapped_d_cols"]:
+    for d in mapped_d_cols:
         dist_yn  = f"'{d['DISTRIBUTION_YN']}'" if d['DISTRIBUTION_YN']  is not None else 'NULL'
         dist_idx = str(d['DISTRIBUTION_IDX'])   if d['DISTRIBUTION_IDX'] is not None else 'NULL'
         cur.execute(
@@ -398,19 +228,23 @@ def _sync_columns(cur, table_id, cmp):
             f"{d['SORT_IDX']}, {dist_yn}, {dist_idx}, now(), now())"
         )
 
-    return len(cmp["mapped_d_cols"])
+    return len(mapped_d_cols)
 
 
-def apply_sync(table_id, cmp):
+def apply_sync(table_id):
     """
-    메타 + 컬럼을 단일 트랜잭션으로 동기화.
-    _sync_meta 실행 후 _sync_columns 실행. 어느 쪽이든 실패 시 전체 rollback.
+    D에서 데이터를 조회해 메타 + 컬럼을 단일 트랜잭션으로 동기화.
+    어느 쪽이든 실패 시 전체 rollback.
     """
+    d_meta       = _fetch_d_meta(table_id)
+    c_meta       = _fetch_c_meta(table_id)
+    mapped_d_cols = [_d_col_to_c(r) for r in _fetch_d_columns(table_id)]
+
     with get_connection(DB_C) as conn:
         with get_cursor(conn) as cur:
-            meta_op  = _sync_meta(cur, table_id, cmp)
-            inserted = _sync_columns(cur, table_id, cmp)
-    print("\n동기화 완료")
+            meta_op  = _sync_meta(cur, table_id, d_meta, c_meta)
+            inserted = _sync_columns(cur, table_id, mapped_d_cols)
+
     if meta_op:
         print(f"  메타: {meta_op}")
     print(f"  컬럼: {inserted}개 재삽입")
@@ -473,7 +307,7 @@ def handle_select():
 
 def handle_sync(table_id=None):
     """
-    메뉴 2 — D/C 비교 후 확인 입력을 받아 동기화.
+    메뉴 2 — 확인 입력 후 동기화 실행.
     --sync <table_id> 인자로도 진입 가능.
     D에 table_id가 없으면 동기화 불가 (D가 소스).
     """
@@ -482,24 +316,16 @@ def handle_sync(table_id=None):
     if table_id is None:
         return
 
-    cmp = build_comparison(table_id)
-
-    if cmp["d_meta"] is None:
+    if _fetch_d_meta(table_id) is None:
         print(f"  D DB에 table_id {table_id} 가 존재하지 않습니다.")
         return
 
-    print_comparison(cmp)
-
-    if not cmp["has_changes"]:
-        print("\n  변경 사항이 없습니다.")
-        return
-
-    answer = input("\n동기화를 진행하시겠습니까? (yes/no): ").strip().lower()
+    answer = input("동기화를 진행하시겠습니까? (yes/no): ").strip().lower()
     if answer != "yes":
         print("  취소되었습니다.")
         return
 
-    apply_sync(table_id, cmp)
+    apply_sync(table_id)
 
 
 def handle_delete():
