@@ -258,12 +258,13 @@ def build_comparison(table_id):
     )
 
     return {
-        "table_id":     table_id,
-        "d_meta":       d_meta,
-        "c_meta":       c_meta,
-        "meta_diffs":   meta_diffs,
-        "column_diffs": column_diffs,
-        "has_changes":  has_changes,
+        "table_id":      table_id,
+        "d_meta":        d_meta,
+        "c_meta":        c_meta,
+        "meta_diffs":    meta_diffs,
+        "mapped_d_cols": mapped_d_cols,  # _sync_columns에서 재삽입 대상으로 사용
+        "column_diffs":  column_diffs,
+        "has_changes":   has_changes,
     }
 
 
@@ -379,67 +380,26 @@ def _sync_meta(cur, table_id, cmp):
 
 def _sync_columns(cur, table_id, cmp):
     """
-    컬럼 목록 증분 동기화 (C_TABLE_COLUMN).
-    타임스탬프는 PostgreSQL now() 사용.
+    컬럼 전체 재삽입 동기화 (C_TABLE_COLUMN).
+    기존 컬럼 전부 DELETE 후 D 컬럼 전부 INSERT.
+    CREATE_DATE / UPDATE_DATE 모두 now().
 
-    매칭 기준 : COLUMN_NAME
-      → 같은 이름의 컬럼을 D/C 양쪽에서 찾아 비교
-
-    동일 판단 : _COL_VISIBLE 항목(COLUMN_NAME, DATA_TYPE_NAME, SORT_IDX,
-                DISTRIBUTION_YN, DISTRIBUTION_IDX) 모두 일치해야 "동일"
-
-    행 식별   : UPDATE/DELETE의 WHERE 절은 TABLE_ID + COLUMN_NAME + SORT_IDX
-      → c_row(C의 기존 값)로 행을 찾고, d_row(D의 새 값)로 갱신
-      → sort_idx가 바뀌는 경우에도 기존 행을 정확히 식별하기 위해 c_row 기준 사용
-
-    반환: (inserted, updated, deleted) 건수
+    반환: 삽입된 컬럼 수
     """
-    inserted = updated = deleted = 0
+    cur.execute(f'DELETE FROM "C_TABLE_COLUMN" WHERE "TABLE_ID" = {table_id}')
 
-    for diff in cmp["column_diffs"]:
-        status = diff["status"]
-        d = diff["d_row"]   # D에서 가져온 행 (C 컬럼명 공간으로 변환된 상태)
-        c = diff["c_row"]   # C에서 가져온 현재 행
+    for d in cmp["mapped_d_cols"]:
+        dist_yn  = f"'{d['DISTRIBUTION_YN']}'" if d['DISTRIBUTION_YN']  is not None else 'NULL'
+        dist_idx = str(d['DISTRIBUTION_IDX'])   if d['DISTRIBUTION_IDX'] is not None else 'NULL'
+        cur.execute(
+            f"INSERT INTO \"C_TABLE_COLUMN\" "
+            f"(\"TABLE_ID\", \"COLUMN_NAME\", \"DATA_TYPE_ID\", \"DATA_TYPE_NAME\", \"SORT_IDX\", "
+            f"\"DISTRIBUTION_YN\", \"DISTRIBUTION_IDX\", \"CREATE_DATE\", \"UPDATE_DATE\") "
+            f"VALUES ({d['TABLE_ID']}, '{d['COLUMN_NAME']}', {d['DATA_TYPE_ID']}, '{d['DATA_TYPE_NAME']}', "
+            f"{d['SORT_IDX']}, {dist_yn}, {dist_idx}, now(), now())"
+        )
 
-        if status == "추가 예정" and d:
-            # D에만 존재하는 컬럼 → C에 신규 삽입
-            # nullable: DISTRIBUTION_YN(문자열), DISTRIBUTION_IDX(정수)
-            dist_yn  = f"'{d['DISTRIBUTION_YN']}'" if d['DISTRIBUTION_YN']  is not None else 'NULL'
-            dist_idx = str(d['DISTRIBUTION_IDX'])   if d['DISTRIBUTION_IDX'] is not None else 'NULL'
-            cur.execute(
-                f"INSERT INTO \"C_TABLE_COLUMN\" "
-                f"(\"TABLE_ID\", \"COLUMN_NAME\", \"DATA_TYPE_ID\", \"DATA_TYPE_NAME\", \"SORT_IDX\", "
-                f"\"DISTRIBUTION_YN\", \"DISTRIBUTION_IDX\", \"CREATE_DATE\", \"UPDATE_DATE\") "
-                f"VALUES ({d['TABLE_ID']}, '{d['COLUMN_NAME']}', {d['DATA_TYPE_ID']}, '{d['DATA_TYPE_NAME']}', "
-                f"{d['SORT_IDX']}, {dist_yn}, {dist_idx}, now(), now())"
-            )
-            inserted += 1
-
-        elif status == "변경" and d and c:
-            # D/C 모두 존재하나 값이 다름 → C를 D 기준으로 갱신
-            # WHERE: C의 기존 COLUMN_NAME + SORT_IDX로 행 식별 (sort_idx 변경 케이스 대응)
-            dist_yn  = f"'{d['DISTRIBUTION_YN']}'" if d['DISTRIBUTION_YN']  is not None else 'NULL'
-            dist_idx = str(d['DISTRIBUTION_IDX'])   if d['DISTRIBUTION_IDX'] is not None else 'NULL'
-            cur.execute(
-                f"UPDATE \"C_TABLE_COLUMN\" "
-                f"SET \"DATA_TYPE_NAME\" = '{d['DATA_TYPE_NAME']}', \"DATA_TYPE_ID\" = {d['DATA_TYPE_ID']}, "
-                f"\"SORT_IDX\" = {d['SORT_IDX']}, \"DISTRIBUTION_YN\" = {dist_yn}, \"DISTRIBUTION_IDX\" = {dist_idx}, "
-                f"\"UPDATE_DATE\" = now() "
-                f"WHERE \"TABLE_ID\" = {table_id} "
-                f"AND \"COLUMN_NAME\" = '{c['COLUMN_NAME']}' AND \"SORT_IDX\" = {c['SORT_IDX']}"
-            )
-            updated += 1
-
-        elif status == "삭제 예정" and c:
-            # C에만 존재 (D에서 제거됨) → C에서 삭제
-            cur.execute(
-                f"DELETE FROM \"C_TABLE_COLUMN\" "
-                f"WHERE \"TABLE_ID\" = {table_id} "
-                f"AND \"COLUMN_NAME\" = '{c['COLUMN_NAME']}' AND \"SORT_IDX\" = {c['SORT_IDX']}"
-            )
-            deleted += 1
-
-    return inserted, updated, deleted
+    return len(cmp["mapped_d_cols"])
 
 
 def apply_sync(table_id, cmp):
@@ -449,12 +409,12 @@ def apply_sync(table_id, cmp):
     """
     with get_connection(DB_C) as conn:
         with get_cursor(conn) as cur:
-            meta_op = _sync_meta(cur, table_id, cmp)
-            inserted, updated, deleted = _sync_columns(cur, table_id, cmp)
+            meta_op  = _sync_meta(cur, table_id, cmp)
+            inserted = _sync_columns(cur, table_id, cmp)
     print("\n동기화 완료")
     if meta_op:
         print(f"  메타: {meta_op}")
-    print(f"  컬럼: 추가 {inserted} / 수정 {updated} / 삭제 {deleted}")
+    print(f"  컬럼: {inserted}개 재삽입")
 
 
 # ── 터미널 표 출력 ─────────────────────────────────────────────────────
