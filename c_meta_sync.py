@@ -301,8 +301,8 @@ def print_comparison(cmp):
         print("  D에 해당 table_id가 없습니다.")
     else:
         _print_rows(
-            ["항목", "D값", "C값", "상태"],
-            [[d["field"], _str(d["d_val"]), _str(d["c_val"]), d["status"]] for d in cmp["meta_diffs"]],
+            ["항목", "D값", "C값"],
+            [[d["field"], _str(d["d_val"]), _str(d["c_val"])] for d in cmp["meta_diffs"]],
         )
 
     print("\n[컬럼 비교]")
@@ -310,9 +310,9 @@ def print_comparison(cmp):
         print("  컬럼 정보가 없습니다.")
     else:
         _print_rows(
-            ["sort_idx", "D_column_name", "D_data_type_name", "C_column_name", "C_data_type_name", "상태"],
+            ["sort_idx", "D_column_name", "D_data_type_name", "C_column_name", "C_data_type_name"],
             [[_str(d["sort_idx"]), _str(d["d_column_name"]), _str(d["d_data_type_name"]),
-              _str(d["c_column_name"]), _str(d["c_data_type_name"]), d["status"]]
+              _str(d["c_column_name"]), _str(d["c_data_type_name"])]
              for d in cmp["column_diffs"]],
         )
 
@@ -322,12 +322,11 @@ def print_comparison(cmp):
     if dist_rows:
         print("\n[distribution 정보]")
         _print_rows(
-            ["sort_idx", "distribution_yn", "distribution_idx", "상태"],
+            ["sort_idx", "distribution_yn", "distribution_idx"],
             [[
                 _str(d["sort_idx"]),
                 _str(d["d_dist_yn"]  if d["d_dist_yn"]  is not None else d["c_dist_yn"]),
                 _str(d["d_dist_idx"] if d["d_dist_idx"] is not None else d["c_dist_idx"]),
-                d["status"],
             ] for d in dist_rows],
         )
 
