@@ -34,7 +34,7 @@ python3 c_meta_sync.py --sync <table_id>  # 동기화 직접 실행
 
 ```bash
 chmod +x tunnel.sh
-./tunnel.sh start | stop | restart | status | log
+./tunnel.sh start | stop | restart | status
 ```
 
 재부팅 자동 시작: `crontab -e` → `@reboot sleep 30 && /home/my_username/tunnel.sh start`
@@ -42,14 +42,13 @@ chmod +x tunnel.sh
 ### 파일 내부 구성 (섹션 순서)
 
 ```
-설정          _C_DB_CONFIG / _D_DB_CONFIG 딕셔너리
-DB 클라이언트  get_connection(target) / get_cursor / execute_query
-매핑 정의     TypeMapping, TableMapping, TABLE_MAPPINGS, TYPE_ID_MAP
-동기화 유틸   _q, _val, _map_row, _resolve_type_id
-데이터 조회   _fetch_d/c_meta, _fetch_d/c_columns
-비교 로직     build_comparison, print_comparison
-동기화 실행   apply_sync (_sync_meta + _sync_columns, 단일 트랜잭션)
-메뉴 핸들러  handle_select / handle_sync / handle_delete
+설정           _C_DB_CONFIG / _D_DB_CONFIG 딕셔너리
+DB 클라이언트   get_connection(target) / get_cursor / execute_query
+타입 매핑      TypeMapping, TYPE_ID_MAP
+데이터 조회    _fetch_d/c_meta, _fetch_d/c_columns, _d_col_to_c
+비교 로직      build_comparison, print_comparison
+동기화 실행    _sync_meta / _sync_columns / apply_sync (단일 트랜잭션)
+메뉴 핸들러   handle_select / handle_sync / handle_delete
 ```
 
 ### execute_query API
@@ -59,54 +58,52 @@ execute_query(query, target=DB_C, fetch_result=False, commit=False)
 # fetch_result=True  → list[dict] 반환 (SELECT)
 # commit=True        → 영향받은 행 수 반환 (INSERT/UPDATE/DELETE)
 
-get_connection(target)  # 단일 트랜잭션이 필요한 경우 직접 사용
+get_connection(target)  # 단일 트랜잭션이 필요한 경우 직접 사용 (apply_sync 참고)
 get_cursor(conn)
 ```
 
 ### 식별자 쌍따옴표 규칙
 
-- **C DB**: 모든 테이블명·컬럼명에 쌍따옴표 필수 (`"c_table_meta"`, `"table_id"`)
-- **D DB**: 쌍따옴표 불필요
-- `_q(identifier)` 헬퍼로 처리
+- **C DB**: 모든 테이블명·컬럼명에 쌍따옴표 + 대문자 필수 → `"C_TABLE_META"`, `"TABLE_ID"`
+- **D DB**: 쌍따옴표 불필요, 소문자
+- SQL을 f-string으로 직접 작성. 헬퍼 함수(`_q`, `_val`) 없음
 
-### 테이블 매핑 구조
+### 타입 매핑
 
-모든 테이블의 PK 컬럼명은 `table_id`로 고정.
+D의 `data_type_name`(문자열) → C의 `DATA_TYPE_ID`(정수) + `DATA_TYPE_NAME` 변환.
 
-| 매핑키 | D 테이블 | C 테이블 |
-|--------|---------|---------|
-| `table_meta` | `d_table_meta` | `c_table_meta` |
-| `table_column` | `d_table_column` | `c_table_column` |
+```python
+TYPE_ID_MAP: dict[str, TypeMapping] = {
+    "varchar": TypeMapping(data_type_id=101, data_type_name="varchar"),
+    ...
+}
+```
 
-**컬럼 매핑:**
+키는 D `d_table_column.data_type_name`의 실제 값과 일치해야 함.
 
-| D 컬럼 | C 컬럼 | 비고 |
-|--------|--------|------|
-| db | db_name | |
-| name | table_name | |
-| data_type | display_data_type | |
-| type_id | data_type_id | 비교화면 미출력 |
-| distribution_yn | distribution_yn | |
-| distribution_idx | distribution_idx | |
-| _(기타 D 전용)_ | — | 동기화 제외 |
-| — | create_date_ts | INSERT 시 현재시각 |
-| — | update_date_ts | INSERT/UPDATE 시 현재시각 |
-| — | _(기타 C 전용)_ | 동기화 제외 |
+### 컬럼 변환 (_d_col_to_c)
+
+D 컬럼 행(소문자 키)을 C 컬럼명 공간(대문자 키)으로 변환. `data_type_name`으로 `TYPE_ID_MAP`을 조회해 `DATA_TYPE_ID`를 파생.
 
 ### 동기화 흐름 (table_id 단건)
 
-1. D, C 양쪽에서 지정 컬럼만 SELECT
-2. D 행을 C 컬럼명 공간으로 변환 (`_map_row`)
-3. 컬럼 매칭: `(column_name, sort_idx)` 두 값 모두 일치해야 동일 컬럼
+1. D/C 양쪽에서 각각 메타·컬럼 SELECT
+2. D 컬럼을 `_d_col_to_c`로 C 컬럼명 공간으로 변환
+3. 비교:
+   - 메타: `("db","DB_NAME")`, `("name","TABLE_NAME")` 쌍으로 직접 비교
+   - 컬럼: `COLUMN_NAME` 기준 매칭, `_COL_VISIBLE` 항목 비교로 변경 여부 판단
 4. 비교화면 출력 → 확인 입력
-5. 단일 트랜잭션으로 meta + column 완전 동기화 (INSERT/UPDATE/DELETE)
+5. 단일 트랜잭션으로 `_sync_meta` → `_sync_columns` 실행
 
 ### 주요 제약사항
 
-- 동기화는 항상 완전 일치 (D가 소스)
-- column 삭제 순서: `c_table_column` 먼저, `c_table_meta` 나중 (FK 순서)
+- 동기화 방향: D → C (D가 소스, C를 D에 맞춤)
+- 컬럼 매칭 기준: `COLUMN_NAME`
+- UPDATE/DELETE WHERE 조건: `TABLE_ID + COLUMN_NAME + SORT_IDX` (c_row 기준)
+  - sort_idx가 변경되는 경우 C의 기존 sort_idx로 행을 찾아야 하므로 c_row 기준 사용
+- 타임스탬프: Python 아닌 PostgreSQL `now()` 사용
+- FK 삭제 순서: `C_TABLE_COLUMN` 먼저, `C_TABLE_META` 나중
 - `tunnel.sh`는 `pkill` 미사용 — `trap` + SSH PID 직접 추적으로 자식 프로세스 정리
-- 새 테이블 추가 시 파일 내 `TABLE_MAPPINGS`에만 항목 추가
 
 ---
 
@@ -117,34 +114,29 @@ get_cursor(conn)
 ```bash
 pip3 install --user impyla   # 최초 1회
 python3 impala_sync.py <table_id>
+python3 impala_sync.py <table_id> --dry-run
 ```
 
 ### 파일 내부 구성 (섹션 순서)
 
 ```
-설정          _D_DB_CONFIG / _IMPALA_CONFIG 딕셔너리, IMPALA_TYPE_MAP
-D DB 클라이언트 get_connection / get_cursor / execute_query (D서버 전용)
+설정           _D_DB_CONFIG / _IMPALA_CONFIG 딕셔너리, IMPALA_TYPE_MAP
+D DB 클라이언트  get_connection / get_cursor / execute_query (D서버 전용)
 Impala 클라이언트 _impala_connection / describe_columns
-타입 매핑     resolve_type_id
-동기화 실행   sync_columns
+타입 매핑      resolve_type_id
+동기화 실행    sync_columns
 ```
 
 ### 동작 흐름
 
 1. D DB에서 `table_id` → `db`, `name` 조회
-2. Impala `DESCRIBE FORMATTED {db}.{name}` 실행
-3. 컬럼 파싱: `# col_name` 헤더·빈 행 스킵, 첫 번째 `#` 섹션 또는 빈 행에서 종료
-4. type_id 매핑 사전 검증 (미매핑 타입 있으면 중단)
-5. 단일 트랜잭션: `d_table_column` 기존 행 삭제 후 새 컬럼 삽입
-
-### describe_columns 반환 형식
-
-```python
-[{"column_name": str, "data_type": str}, ...]
-```
+2. Impala `DESCRIBE FORMATTED {db}.{name}` 실행 (Iceberg 전용 — `# Partition Transform Information` 섹션 필수)
+3. 컬럼 파싱: 헤더·빈 행 스킵, 첫 번째 `#` 섹션에서 종료
+4. `IMPALA_TYPE_MAP` 사전 검증 후 기존 컬럼과 비교해 증분 동기화
+5. `d_table_partition`에서 파티션 컬럼 조회 → `distribution_yn/idx` 업데이트
 
 ### 수정 필요 항목
 
 - `_D_DB_CONFIG`: D DB 접속 정보
-- `_IMPALA_CONFIG`: Impala 접속 정보
-- `IMPALA_TYPE_MAP`: Impala 타입 → 실제 D type_id 값
+- `_IMPALA_CONFIG`: Impala 접속 정보 (LDAP/SSL 포함)
+- `IMPALA_TYPE_MAP`: Impala 타입 문자열 → 실제 D `data_type_name` 값으로 업데이트 필요

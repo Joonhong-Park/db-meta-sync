@@ -29,7 +29,7 @@ pip3 install --user psycopg2-binary
 
 ```bash
 chmod +x tunnel.sh
-./tunnel.sh start | stop | restart | status | log
+./tunnel.sh start | stop | restart | status
 ```
 
 **재부팅 자동 시작** (`crontab -e`):
@@ -39,20 +39,11 @@ chmod +x tunnel.sh
 
 ### 접속 정보 설정
 
-`c_meta_sync.py` 상단의 `_C_DB_CONFIG` / `_D_DB_CONFIG` 또는 환경변수로 설정:
+`c_meta_sync.py` 상단의 `_C_DB_CONFIG` / `_D_DB_CONFIG` 딕셔너리를 직접 수정:
 
-```bash
-export C_DB_HOST=localhost
-export C_DB_PORT=15432
-export C_DB_NAME=your_c_database
-export C_DB_USER=your_c_username
-export C_DB_PASSWORD=your_c_password
-
-export D_DB_HOST=d_server_host
-export D_DB_PORT=5432
-export D_DB_NAME=your_d_database
-export D_DB_USER=your_d_username
-export D_DB_PASSWORD=your_d_password
+```python
+_C_DB_CONFIG = {"host": "localhost", "port": 15432, "dbname": "...", "user": "...", "password": "..."}
+_D_DB_CONFIG = {"host": "d_server_host", "port": 5432, "dbname": "...", "user": "...", "password": "..."}
 ```
 
 ### 실행
@@ -79,13 +70,13 @@ python3 c_meta_sync.py --sync <table_id>  # 동기화 직접 실행
 
 | 비교 섹션 | 내용 |
 |----------|------|
-| 메타 비교 | db_name, table_name D/C 값 및 변경 여부 |
-| 컬럼 비교 | sort_idx, 컬럼명, 타입 D/C 비교 및 상태 |
+| 메타 비교 | DB_NAME, TABLE_NAME D/C 값 및 변경 여부 |
+| 컬럼 비교 | SORT_IDX, 컬럼명, 타입 D/C 비교 및 상태 |
 | distribution 정보 | 값이 있는 row만 출력 |
 
 - D → C 단방향 동기화
-- 컬럼 매칭: `column_name` + `sort_idx` 두 값 모두 일치해야 동일 컬럼
-- `create_date_ts` / `update_date_ts` 동기화 제외 (현재 시각 자동 기록)
+- 컬럼 매칭: `COLUMN_NAME` 기준, UPDATE/DELETE 행 식별은 `COLUMN_NAME + SORT_IDX`
+- `CREATE_DATE` / `UPDATE_DATE` 동기화 제외 (PostgreSQL `now()` 자동 기록)
 
 **3. 테이블 정보 삭제** — `table_id` 입력 → 확인 후 C DB에서 컬럼·메타 삭제
 
@@ -101,39 +92,32 @@ pip3 install --user impyla
 
 ### 접속 정보 설정
 
-`impala_sync.py` 상단의 `_D_DB_CONFIG` / `_IMPALA_CONFIG` 또는 환경변수로 설정:
-
-```bash
-export D_DB_HOST=d_server_host
-export D_DB_PORT=5432
-export D_DB_NAME=your_d_database
-export D_DB_USER=your_d_username
-export D_DB_PASSWORD=your_d_password
-
-export IMPALA_HOST=impala_host
-export IMPALA_PORT=21050
-export IMPALA_AUTH=PLAIN   # PLAIN / GSSAPI / LDAP
-```
+`impala_sync.py` 상단의 `_D_DB_CONFIG` / `_IMPALA_CONFIG` 딕셔너리를 직접 수정.
 
 ### 실행
 
 ```bash
 python3 impala_sync.py <table_id>
+python3 impala_sync.py <table_id> --dry-run   # 쿼리만 출력, 실행 안 함
 ```
 
 ### 동작 흐름
 
-1. D DB에서 `table_id` → `db.name` 조회
-2. Impala `DESCRIBE FORMATTED db.name` 실행
-3. 일반 컬럼 / 파티션 컬럼 분리 (일반 테이블 + Iceberg 모두 지원)
-4. 단일 트랜잭션으로 기존 컬럼 삭제 후 새 컬럼 삽입
+1. D DB에서 `table_id` → `db`, `name` 조회
+2. Impala `DESCRIBE FORMATTED {db}.{name}` 실행 **(Iceberg 테이블 전용)**
+3. 컬럼 파싱: `# col_name` 헤더·빈 행 스킵, 첫 번째 `#` 섹션에서 종료
+4. `IMPALA_TYPE_MAP` 사전 검증 (미매핑 타입 있으면 중단)
+5. 기존 컬럼과 비교해 증분 동기화 (INSERT / UPDATE / DELETE)
+6. `d_table_partition`에서 파티션 컬럼 조회 → `distribution_yn/idx` 업데이트
 
 | 컬럼 구분 | distribution_yn | distribution_idx |
 |----------|----------------|-----------------|
 | 일반 컬럼 | NULL | NULL |
-| 파티션 (timestamp) | Y | 1 |
-| 파티션 (string) | Y | 2 |
+| 파티션 1번 | Y | 1 |
+| 파티션 2번 | Y | 2 |
 
-사용 가능한 타입: `string`, `int`, `bigint`/`long`, `double`, `timestamp`, `date`
+### 수정 필요 항목
 
-타입 매핑은 `impala_sync.py` 상단의 `IMPALA_TYPE_MAP`에서 실제 D type_id 값으로 업데이트 필요
+- `_D_DB_CONFIG`: D DB 접속 정보
+- `_IMPALA_CONFIG`: Impala 접속 정보 (LDAP/SSL 포함)
+- `IMPALA_TYPE_MAP`: Impala 타입 문자열 → 실제 D `data_type_name` 값으로 업데이트 필요
