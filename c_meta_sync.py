@@ -39,7 +39,7 @@ DB_IMP = "IMP"
 # ── DB 클라이언트 ──────────────────────────────────────────────────────
 
 @contextmanager
-def get_connection(target=DB_SP):
+def get_connection(target):
     cfg  = _SP_DB_CONFIG if target == DB_SP else _IMP_DB_CONFIG
     conn = None
     try:
@@ -89,7 +89,10 @@ TYPE_ID_MAP: dict[str, int] = {
 def _fetch_imp_data(table_id):
     with get_connection(DB_IMP) as conn:
         with get_cursor(conn) as cur:
-            cur.execute("SELECT table_id, db, name FROM d_table_meta WHERE table_id = %s", (table_id,))
+            cur.execute(
+                "SELECT table_id, db, name, table_type FROM d_table_meta WHERE table_id = %s",
+                (table_id,)
+            )
             meta = cur.fetchone()
             if not meta:
                 return None, []
@@ -106,7 +109,7 @@ def _fetch_sp_data(table_id):
     with get_connection(DB_SP) as conn:
         with get_cursor(conn) as cur:
             cur.execute(
-                'SELECT "TABLE_ID", "DB_NAME", "TABLE_NAME" FROM "C_TABLE_META" WHERE "TABLE_ID" = %s',
+                'SELECT "TABLE_ID", "DB_NAME", "TABLE_NAME", "DB_CODE", "TABLE_TYPE", "IS_WORKING" FROM "C_TABLE_META" WHERE "TABLE_ID" = %s',
                 (table_id,)
             )
             meta = cur.fetchone()
@@ -139,31 +142,40 @@ def _imp_col_to_sp(d_row):
 
 # ── 동기화 실행 ────────────────────────────────────────────────────────
 
-def _sync_meta(cur, table_id, d_meta, c_meta):
-    if not c_meta:
+def _sync_meta(cur, table_id, imp_meta, sp_meta):
+    cur.execute(
+        "SELECT schema FROM db_code_list WHERE schema_name = %s",
+        (imp_meta['db'],)
+    )
+    row      = cur.fetchone()
+    db_code  = row['schema'] if row else None
+
+    if not sp_meta:
         cur.execute(
-            'INSERT INTO "C_TABLE_META" ("TABLE_ID", "DB_NAME", "TABLE_NAME", "CREATE_DATE", "UPDATE_DATE") '
-            'VALUES (%s, %s, %s, now(), now())',
-            (d_meta['table_id'], d_meta['db'], d_meta['name'])
+            'INSERT INTO "C_TABLE_META" '
+            '("TABLE_ID", "DB_NAME", "TABLE_NAME", "DB_CODE", "TABLE_TYPE", "IS_WORKING", "CREATE_DATE", "UPDATE_DATE") '
+            'VALUES (%s, %s, %s, %s, %s, false, now(), now())',
+            (imp_meta['table_id'], imp_meta['db'], imp_meta['name'], db_code, imp_meta['table_type'])
         )
         return "INSERT"
 
     cur.execute(
-        'UPDATE "C_TABLE_META" SET "DB_NAME" = %s, "TABLE_NAME" = %s, "UPDATE_DATE" = now() '
+        'UPDATE "C_TABLE_META" '
+        'SET "DB_NAME" = %s, "TABLE_NAME" = %s, "DB_CODE" = %s, "TABLE_TYPE" = %s, "UPDATE_DATE" = now() '
         'WHERE "TABLE_ID" = %s',
-        (d_meta['db'], d_meta['name'], table_id)
+        (imp_meta['db'], imp_meta['name'], db_code, imp_meta['table_type'], table_id)
     )
     return "UPDATE"
 
 
-def _sync_columns(cur, table_id, mapped_d_cols):
+def _sync_columns(cur, table_id, mapped_cols):
     cur.execute('DELETE FROM "C_TABLE_COLUMN" WHERE "TABLE_ID" = %s', (table_id,))
-    if not mapped_d_cols:
+    if not mapped_cols:
         return 0
 
-    placeholders = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, now(), now())"] * len(mapped_d_cols))
+    placeholders = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, now(), now())"] * len(mapped_cols))
     params = []
-    for d in mapped_d_cols:
+    for d in mapped_cols:
         params.extend((d['TABLE_ID'], d['COLUMN_NAME'], d['DATA_TYPE_ID'], d['DATA_TYPE_NAME'],
                        d['SORT_IDX'], d['DISTRIBUTION_YN'], d['DISTRIBUTION_IDX']))
     cur.execute(
@@ -173,15 +185,15 @@ def _sync_columns(cur, table_id, mapped_d_cols):
         + placeholders,
         params
     )
-    return len(mapped_d_cols)
+    return len(mapped_cols)
 
 
-def apply_sync(table_id, d_meta, c_meta, d_cols):
-    mapped_d_cols = [_imp_col_to_sp(r) for r in d_cols]
+def apply_sync(table_id, imp_meta, sp_meta, imp_cols):
+    mapped_cols = [_imp_col_to_sp(r) for r in imp_cols]
     with get_connection(DB_SP) as conn:
         with get_cursor(conn) as cur:
-            meta_op  = _sync_meta(cur, table_id, d_meta, c_meta)
-            inserted = _sync_columns(cur, table_id, mapped_d_cols)
+            meta_op  = _sync_meta(cur, table_id, imp_meta, sp_meta)
+            inserted = _sync_columns(cur, table_id, mapped_cols)
     print(f"  메타: {meta_op}")
     print(f"  컬럼: {inserted}개 재삽입")
 
@@ -206,21 +218,25 @@ def print_table(rows):
 
 # ── 비교 출력 ─────────────────────────────────────────────────────────
 
-def _print_meta_comparison(d_meta, c_meta):
+def _print_meta_comparison(imp_meta, sp_meta):
+    sp = sp_meta or {}
     rows = [
-        {"항목": "TABLE_ID",   "IMP (소스)": d_meta["table_id"], "SP (현재)": c_meta["TABLE_ID"]   if c_meta else "-"},
-        {"항목": "DB_NAME",    "IMP (소스)": d_meta["db"],       "SP (현재)": c_meta["DB_NAME"]    if c_meta else "-"},
-        {"항목": "TABLE_NAME", "IMP (소스)": d_meta["name"],     "SP (현재)": c_meta["TABLE_NAME"] if c_meta else "-"},
+        {"항목": "TABLE_ID",   "IMP (소스)": imp_meta["table_id"],   "SP (현재)": sp.get("TABLE_ID",   "-")},
+        {"항목": "DB_NAME",    "IMP (소스)": imp_meta["db"],          "SP (현재)": sp.get("DB_NAME",    "-")},
+        {"항목": "TABLE_NAME", "IMP (소스)": imp_meta["name"],        "SP (현재)": sp.get("TABLE_NAME", "-")},
+        {"항목": "DB_CODE",    "IMP (소스)": "-",                     "SP (현재)": sp.get("DB_CODE",    "-")},
+        {"항목": "TABLE_TYPE", "IMP (소스)": imp_meta["table_type"],  "SP (현재)": sp.get("TABLE_TYPE",  "-")},
+        {"항목": "IS_WORKING", "IMP (소스)": "-",                     "SP (현재)": sp.get("IS_WORKING",  "-")},
     ]
     print_table(rows)
 
 
-def _print_column_comparison(d_cols, c_cols):
-    nd, nc = len(d_cols), len(c_cols)
+def _print_column_comparison(imp_cols, sp_cols):
+    ni, ns = len(imp_cols), len(sp_cols)
     rows = []
-    for i in range(max(nd, nc)):
-        d = d_cols[i] if i < nd else {}
-        c = c_cols[i] if i < nc else {}
+    for i in range(max(ni, ns)):
+        d = imp_cols[i] if i < ni else {}
+        c = sp_cols[i]  if i < ns else {}
         rows.append({
             "imp_column":   d.get("column_name",      "-"),
             "imp_type":     d.get("data_type_name",   "-"),
@@ -259,7 +275,10 @@ def handle_select():
             if not meta:
                 print(f"  table_id {table_id} 가 존재하지 않습니다.")
                 return
-            cur.execute('SELECT * FROM "C_TABLE_COLUMN" WHERE "TABLE_ID" = %s ORDER BY "SORT_IDX"', (table_id,))
+            cur.execute(
+                'SELECT * FROM "C_TABLE_COLUMN" WHERE "TABLE_ID" = %s ORDER BY "SORT_IDX"',
+                (table_id,)
+            )
             cols = [dict(r) for r in cur.fetchall()]
 
     print("\n[메타 정보]")
@@ -274,24 +293,24 @@ def handle_sync(table_id=None):
     if table_id is None:
         return
 
-    d_meta, d_cols = _fetch_imp_data(table_id)
-    if d_meta is None:
+    imp_meta, imp_cols = _fetch_imp_data(table_id)
+    if imp_meta is None:
         print(f"  IMP DB에 table_id {table_id} 가 존재하지 않습니다.")
         return
 
-    c_meta, c_cols = _fetch_sp_data(table_id)
+    sp_meta, sp_cols = _fetch_sp_data(table_id)
 
     print("\n[메타 비교]")
-    _print_meta_comparison(d_meta, c_meta)
+    _print_meta_comparison(imp_meta, sp_meta)
     print("\n[컬럼 비교]")
-    _print_column_comparison(d_cols, c_cols)
+    _print_column_comparison(imp_cols, sp_cols)
 
     answer = input("\n동기화를 진행하시겠습니까? (yes/no): ").strip().lower()
     if answer != "yes":
         print("  취소되었습니다.")
         return
 
-    apply_sync(table_id, d_meta, c_meta, d_cols)
+    apply_sync(table_id, imp_meta, sp_meta, imp_cols)
 
 
 def handle_delete():
@@ -324,7 +343,7 @@ def handle_delete():
     with get_connection(DB_SP) as conn:
         with get_cursor(conn) as cur:
             cur.execute('DELETE FROM "C_TABLE_COLUMN" WHERE "TABLE_ID" = %s', (table_id,))
-            cur.execute('DELETE FROM "C_TABLE_META" WHERE "TABLE_ID" = %s', (table_id,))
+            cur.execute('DELETE FROM "C_TABLE_META"   WHERE "TABLE_ID" = %s', (table_id,))
     print(f"  삭제 완료: {db_table} (table_id: {table_id})")
 
 
