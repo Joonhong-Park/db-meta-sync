@@ -90,7 +90,7 @@ def _fetch_imp_data(table_id):
     with get_connection(DB_IMP) as conn:
         with get_cursor(conn) as cur:
             cur.execute(
-                "SELECT table_id, db, name, table_type FROM d_table_meta WHERE table_id = %s",
+                "SELECT table_id, db, name, table_type, is_working FROM d_table_meta WHERE table_id = %s",
                 (table_id,)
             )
             meta = cur.fetchone()
@@ -154,16 +154,16 @@ def _sync_meta(cur, table_id, imp_meta, sp_meta):
         cur.execute(
             'INSERT INTO "C_TABLE_META" '
             '("TABLE_ID", "DB_NAME", "TABLE_NAME", "DB_CODE", "TABLE_TYPE", "IS_WORKING", "CREATE_DATE", "UPDATE_DATE") '
-            'VALUES (%s, %s, %s, %s, %s, false, now(), now())',
-            (imp_meta['table_id'], imp_meta['db'], imp_meta['name'], db_code, imp_meta['table_type'])
+            'VALUES (%s, %s, %s, %s, %s, %s, now(), now())',
+            (imp_meta['table_id'], imp_meta['db'], imp_meta['name'], db_code, imp_meta['table_type'], imp_meta['is_working'])
         )
         return "INSERT"
 
     cur.execute(
         'UPDATE "C_TABLE_META" '
-        'SET "DB_NAME" = %s, "TABLE_NAME" = %s, "DB_CODE" = %s, "TABLE_TYPE" = %s, "UPDATE_DATE" = now() '
+        'SET "DB_NAME" = %s, "TABLE_NAME" = %s, "DB_CODE" = %s, "TABLE_TYPE" = %s, "IS_WORKING" = %s, "UPDATE_DATE" = now() '
         'WHERE "TABLE_ID" = %s',
-        (imp_meta['db'], imp_meta['name'], db_code, imp_meta['table_type'], table_id)
+        (imp_meta['db'], imp_meta['name'], db_code, imp_meta['table_type'], imp_meta['is_working'], table_id)
     )
     return "UPDATE"
 
@@ -226,7 +226,7 @@ def _print_meta_comparison(imp_meta, sp_meta):
         {"항목": "TABLE_NAME", "IMP (소스)": imp_meta["name"],        "SP (현재)": sp.get("TABLE_NAME", "-")},
         {"항목": "DB_CODE",    "IMP (소스)": "-",                     "SP (현재)": sp.get("DB_CODE",    "-")},
         {"항목": "TABLE_TYPE", "IMP (소스)": imp_meta["table_type"],  "SP (현재)": sp.get("TABLE_TYPE",  "-")},
-        {"항목": "IS_WORKING", "IMP (소스)": "-",                     "SP (현재)": sp.get("IS_WORKING",  "-")},
+        {"항목": "IS_WORKING", "IMP (소스)": imp_meta["is_working"],   "SP (현재)": sp.get("IS_WORKING",  "-")},
     ]
     print_table(rows)
 
