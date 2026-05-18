@@ -142,13 +142,13 @@ def _imp_col_to_sp(d_row):
 
 # ── 동기화 실행 ────────────────────────────────────────────────────────
 
-def _sync_meta(cur, table_id, imp_meta, sp_meta):
+def _sync_meta(cur, imp_meta, sp_meta):
     cur.execute(
         "SELECT schema FROM db_code_list WHERE schema_name = %s",
         (imp_meta['db'],)
     )
-    row      = cur.fetchone()
-    db_code  = row['schema'] if row else None
+    row     = cur.fetchone()
+    db_code = row['schema'] if row else None
 
     if not sp_meta:
         cur.execute(
@@ -163,7 +163,7 @@ def _sync_meta(cur, table_id, imp_meta, sp_meta):
         'UPDATE "C_TABLE_META" '
         'SET "DB_NAME" = %s, "TABLE_NAME" = %s, "DB_CODE" = %s, "TABLE_TYPE" = %s, "IS_WORKING" = %s, "UPDATE_DATE" = now() '
         'WHERE "TABLE_ID" = %s',
-        (imp_meta['db'], imp_meta['name'], db_code, imp_meta['table_type'], imp_meta['is_working'], table_id)
+        (imp_meta['db'], imp_meta['name'], db_code, imp_meta['table_type'], imp_meta['is_working'], imp_meta['table_id'])
     )
     return "UPDATE"
 
@@ -173,17 +173,15 @@ def _sync_columns(cur, table_id, mapped_cols):
     if not mapped_cols:
         return 0
 
-    placeholders = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, now(), now())"] * len(mapped_cols))
-    params = []
-    for d in mapped_cols:
-        params.extend((d['TABLE_ID'], d['COLUMN_NAME'], d['DATA_TYPE_ID'], d['DATA_TYPE_NAME'],
-                       d['SORT_IDX'], d['DISTRIBUTION_YN'], d['DISTRIBUTION_IDX']))
-    cur.execute(
+    psycopg2.extras.execute_values(
+        cur,
         'INSERT INTO "C_TABLE_COLUMN" '
         '("TABLE_ID", "COLUMN_NAME", "DATA_TYPE_ID", "DATA_TYPE_NAME", "SORT_IDX", '
-        '"DISTRIBUTION_YN", "DISTRIBUTION_IDX", "CREATE_DATE", "UPDATE_DATE") VALUES '
-        + placeholders,
-        params
+        '"DISTRIBUTION_YN", "DISTRIBUTION_IDX", "CREATE_DATE", "UPDATE_DATE") VALUES %s',
+        [(d['TABLE_ID'], d['COLUMN_NAME'], d['DATA_TYPE_ID'], d['DATA_TYPE_NAME'],
+          d['SORT_IDX'], d['DISTRIBUTION_YN'], d['DISTRIBUTION_IDX'])
+         for d in mapped_cols],
+        template="(%s, %s, %s, %s, %s, %s, %s, now(), now())",
     )
     return len(mapped_cols)
 
@@ -192,7 +190,7 @@ def apply_sync(table_id, imp_meta, sp_meta, imp_cols):
     mapped_cols = [_imp_col_to_sp(r) for r in imp_cols]
     with get_connection(DB_SP) as conn:
         with get_cursor(conn) as cur:
-            meta_op  = _sync_meta(cur, table_id, imp_meta, sp_meta)
+            meta_op  = _sync_meta(cur, imp_meta, sp_meta)
             inserted = _sync_columns(cur, table_id, mapped_cols)
     print(f"  메타: {meta_op}")
     print(f"  컬럼: {inserted}개 재삽입")
@@ -232,11 +230,15 @@ def _print_meta_comparison(imp_meta, sp_meta):
 
 
 def _print_column_comparison(imp_cols, sp_cols):
-    ni, ns = len(imp_cols), len(sp_cols)
+    imp_map = {r["column_name"]: r for r in imp_cols}
+    sp_map  = {r["COLUMN_NAME"]: r for r in sp_cols}
+    names   = list(dict.fromkeys(
+        [r["column_name"] for r in imp_cols] + [r["COLUMN_NAME"] for r in sp_cols]
+    ))
     rows = []
-    for i in range(max(ni, ns)):
-        d = imp_cols[i] if i < ni else {}
-        c = sp_cols[i]  if i < ns else {}
+    for name in names:
+        d = imp_map.get(name, {})
+        c = sp_map.get(name, {})
         rows.append({
             "imp_column":   d.get("column_name",      "-"),
             "imp_type":     d.get("data_type_name",   "-"),

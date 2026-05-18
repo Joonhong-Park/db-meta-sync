@@ -17,7 +17,7 @@ D서버 DB의 테이블 메타·컬럼 정보를 C서버 DB와 동기화하고, 
 
 ---
 
-## c_meta_sync.py — D ↔ C DB 동기화
+## c_meta_sync.py — IMP ↔ SP DB 동기화
 
 ### 설치
 
@@ -39,11 +39,11 @@ chmod +x tunnel.sh
 
 ### 접속 정보 설정
 
-`c_meta_sync.py` 상단의 `_C_DB_CONFIG` / `_D_DB_CONFIG` 딕셔너리를 직접 수정:
+`c_meta_sync.py` 상단의 `_SP_DB_CONFIG` / `_IMP_DB_CONFIG` 딕셔너리를 직접 수정:
 
 ```python
-_C_DB_CONFIG = {"host": "localhost", "port": 15432, "dbname": "...", "user": "...", "password": "..."}
-_D_DB_CONFIG = {"host": "d_server_host", "port": 5432, "dbname": "...", "user": "...", "password": "..."}
+_SP_DB_CONFIG  = {"host": "localhost", "port": 15432, "dbname": "...", "user": "...", "password": "..."}
+_IMP_DB_CONFIG = {"host": "d_server_host", "port": 5432, "dbname": "...", "user": "...", "password": "..."}
 ```
 
 ### 실행
@@ -64,21 +64,20 @@ python3 c_meta_sync.py --sync <table_id>  # 동기화 직접 실행
 
 ### 기능
 
-**1. 테이블 정보 조회** — `table_id` 입력 → C DB 메타·컬럼 정보 출력
+**1. 테이블 정보 조회** — `table_id` 입력 → SP DB 메타·컬럼 정보 출력
 
-**2. 테이블 동기화** — `table_id` 입력 → D/C 비교화면 출력 → 확인 후 동기화
+**2. 테이블 동기화** — `table_id` 입력 → IMP/SP 비교화면 출력 → 확인 후 동기화
 
 | 비교 섹션 | 내용 |
 |----------|------|
-| 메타 비교 | DB_NAME, TABLE_NAME D/C 값 및 변경 여부 |
-| 컬럼 비교 | SORT_IDX, 컬럼명, 타입 D/C 비교 및 상태 |
-| distribution 정보 | 값이 있는 row만 출력 |
+| 메타 비교 | TABLE_ID, DB_NAME, TABLE_NAME, DB_CODE, TABLE_TYPE, IS_WORKING IMP/SP 값 |
+| 컬럼 비교 | 컬럼명, 타입, SORT_IDX, DISTRIBUTION IMP/SP 나란히 비교 |
 
-- D → C 단방향 동기화
-- 컬럼 매칭: `COLUMN_NAME` 기준, UPDATE/DELETE 행 식별은 `COLUMN_NAME + SORT_IDX`
+- IMP → SP 단방향 동기화
+- 컬럼 동기화: `C_TABLE_COLUMN` DELETE ALL 후 bulk INSERT
 - `CREATE_DATE` / `UPDATE_DATE` 동기화 제외 (PostgreSQL `now()` 자동 기록)
 
-**3. 테이블 정보 삭제** — `table_id` 입력 → 확인 후 C DB에서 컬럼·메타 삭제
+**3. 테이블 정보 삭제** — `table_id` 입력 → 확인 후 SP DB에서 컬럼·메타 삭제
 
 ---
 

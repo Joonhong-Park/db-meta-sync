@@ -75,14 +75,10 @@ def get_cursor(conn):
         cur.close()
 
 
-def execute_query(query, fetch_result=False, commit=False):
-    """
-    fetch_result=True : SELECT — list[dict] 반환
-    commit=True       : INSERT / UPDATE / DELETE — 영향받은 행 수 반환
-    """
+def execute_query(query, params=None, fetch_result=False, commit=False):
     with get_connection() as conn:
         with get_cursor(conn) as cur:
-            cur.execute(query)
+            cur.execute(query, params)
             if fetch_result:
                 return [dict(row) for row in cur.fetchall()]
             if commit:
@@ -103,19 +99,13 @@ def _impala_connection():
 
 
 def describe_columns(db_name, table_name):
-    """
-    Iceberg 테이블 전용. DESCRIBE FORMATTED {db}.{table} 실행 후 컬럼 목록 반환.
-
-    반환: [{"column_name": str, "data_type": str}, ...]
-    """
+    """DESCRIBE FORMATTED {db}.{table} 실행 후 컬럼 목록 반환. (Iceberg 파티션 유무 무관)"""
     with _impala_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(f"DESCRIBE FORMATTED {db_name}.{table_name}")
             rows = cur.fetchall()
 
     section_headers = {(row[0] or "").strip() for row in rows if (row[0] or "").strip().startswith("#")}
-    if "# Partition Transform Information" not in section_headers:
-        raise ValueError(f"{db_name}.{table_name} 은 Iceberg 테이블이 아닙니다.")
 
     columns: list[dict[str, str]] = []
     for row in rows:
@@ -140,7 +130,8 @@ def resolve_type_id(impala_type):
 
 def sync_columns(table_id, dry_run=False):
     rows = execute_query(
-        f"SELECT table_id, db, name FROM d_table_meta WHERE table_id = {table_id}",
+        "SELECT table_id, db, name FROM d_table_meta WHERE table_id = %s",
+        params=(table_id,),
         fetch_result=True,
     )
     if not rows:
@@ -161,81 +152,86 @@ def sync_columns(table_id, dry_run=False):
 
     print(f"  컬럼 {len(columns)}개")
 
-    unmapped = [c for c in columns if resolve_type_id(c["data_type"]) is None]
+    new_map = {
+        col["column_name"]: {"type_id": resolve_type_id(col["data_type"]), "sort_idx": idx}
+        for idx, col in enumerate(columns)
+    }
+    unmapped = [col for col in columns if new_map[col["column_name"]]["type_id"] is None]
     if unmapped:
         for c in unmapped:
             print(f"  [오류] type_map에 없는 타입: '{c['data_type']}' (column: {c['column_name']})")
         print("  IMPALA_TYPE_MAP을 업데이트하세요.")
         sys.exit(1)
 
-    new_map = {
-        col["column_name"]: {"type_id": resolve_type_id(col["data_type"]), "sort_idx": idx}
-        for idx, col in enumerate(columns, start=0)
-    }
-
     existing = execute_query(
-        f"SELECT column_name, data_type_id, sort_idx "
-        f"FROM d_table_column WHERE table_id = {table_id}",
+        "SELECT column_name, data_type_id, sort_idx FROM d_table_column WHERE table_id = %s",
+        params=(table_id,),
         fetch_result=True,
     )
     existing_map = {row["column_name"]: row for row in existing}
 
     partitions = execute_query(
-        f"SELECT partition_name FROM d_table_partition WHERE table_id = {table_id}",
+        "SELECT partition_name FROM d_table_partition WHERE table_id = %s",
+        params=(table_id,),
         fetch_result=True,
     )
     partition_names = [row["partition_name"] for row in partitions if row["partition_name"]]
 
-    queries = []
+    queries: list[tuple[str, tuple]] = []
 
     for col_name, new in new_map.items():
         type_id  = new["type_id"]
         sort_idx = new["sort_idx"]
 
         if col_name not in existing_map:
-            queries.append(
-                f"INSERT INTO d_table_column "
-                f"(table_id, column_name, data_type_id, sort_idx, distribution_yn, distribution_idx, create_date_ts, update_date_ts) "
-                f"VALUES ({table_id}, '{col_name}', {type_id}, {sort_idx}, 'N', NULL, now(), now())"
-            )
+            queries.append((
+                "INSERT INTO d_table_column "
+                "(table_id, column_name, data_type_id, sort_idx, distribution_yn, distribution_idx, create_date_ts, update_date_ts) "
+                "VALUES (%s, %s, %s, %s, 'N', NULL, now(), now())",
+                (table_id, col_name, type_id, sort_idx),
+            ))
         else:
             ex = existing_map[col_name]
             if ex["data_type_id"] != type_id or ex["sort_idx"] != sort_idx:
-                queries.append(
-                    f"UPDATE d_table_column "
-                    f"SET data_type_id = {type_id}, sort_idx = {sort_idx}, "
-                    f"distribution_yn = 'N', distribution_idx = NULL, update_date_ts = now() "
-                    f"WHERE table_id = {table_id} AND column_name = '{col_name}'"
-                )
+                queries.append((
+                    "UPDATE d_table_column "
+                    "SET data_type_id = %s, sort_idx = %s, "
+                    "distribution_yn = 'N', distribution_idx = NULL, update_date_ts = now() "
+                    "WHERE table_id = %s AND column_name = %s",
+                    (type_id, sort_idx, table_id, col_name),
+                ))
 
     for col_name in existing_map:
         if col_name not in new_map:
-            queries.append(
-                f"DELETE FROM d_table_column "
-                f"WHERE table_id = {table_id} AND column_name = '{col_name}'"
-            )
+            queries.append((
+                "DELETE FROM d_table_column WHERE table_id = %s AND column_name = %s",
+                (table_id, col_name),
+            ))
 
     for dist_idx, part_name in enumerate(partition_names, start=1):
-        queries.append(
-            f"UPDATE d_table_column "
-            f"SET distribution_yn = 'Y', distribution_idx = {dist_idx} "
-            f"WHERE table_id = {table_id} AND column_name = '{part_name}'"
-        )
+        queries.append((
+            "UPDATE d_table_column "
+            "SET distribution_yn = 'Y', distribution_idx = %s "
+            "WHERE table_id = %s AND column_name = %s",
+            (dist_idx, table_id, part_name),
+        ))
 
     if dry_run:
         print("  [dry-run] 실행될 쿼리:")
-        for q in queries:
-            print(f"    {q}")
+        with get_connection() as conn:
+            with get_cursor(conn) as cur:
+                for sql, params in queries:
+                    print(f"    {cur.mogrify(sql, params).decode()}")
         return
 
     with get_connection() as conn:
         with get_cursor(conn) as cur:
-            for q in queries:
-                cur.execute(q)
+            for sql, params in queries:
+                cur.execute(sql, params)
 
-    inserted = sum(1 for q in queries if q.startswith("INSERT"))
-    updated  = sum(1 for q in queries if q.startswith("UPDATE"))
-    deleted  = sum(1 for q in queries if q.startswith("DELETE"))
+    inserted = sum(1 for sql, _ in queries if sql.startswith("INSERT"))
+    updated  = sum(1 for sql, _ in queries if sql.startswith("UPDATE"))
+    deleted  = sum(1 for sql, _ in queries if sql.startswith("DELETE"))
     print(f"  추가 {inserted} / 수정 {updated} / 삭제 {deleted}")
     if partition_names:
         for dist_idx, part_name in enumerate(partition_names, start=1):
